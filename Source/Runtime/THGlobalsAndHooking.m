@@ -5,6 +5,7 @@
 
 #import "Include/ThetaTweakCommon.h"
 #import "Include.h"
+#import <os/lock.h>
 #import "Include/THProfileAnalyzerViewController.h"
 #import "fishhook.h"
 #import <Photos/Photos.h>
@@ -32,6 +33,58 @@ static BOOL storeUserSearch = NO;
 static NSTimeInterval lastSpamTime = 0;
 static BOOL hooksInitialized = NO;
 static NSTimeInterval s_lastToastShowTime = 0;
+
+/**
+ * Cached `<setting>_Enabled` lookup behind the ENABLED() macro.
+ *
+ * Hot enough to matter: an unfiltered device capture logged 997 Theta preference reads in 35
+ * seconds — 42% of all CFPrefs traffic in the process — because the old macro allocated a key
+ * with `stringWithFormat:` and hit NSUserDefaults on every call, from predicates UIKit
+ * evaluates while rendering.
+ *
+ * The cache is dropped on any defaults change, and again when the app becomes active so an
+ * out-of-process write cannot leave it stale.
+ */
+BOOL ThetaSettingEnabled(NSString *setting) {
+    if (setting.length == 0) {
+        return NO;
+    }
+
+    static NSMutableDictionary<NSString *, NSNumber *> *sSettingCache;
+    static os_unfair_lock sSettingLock = OS_UNFAIR_LOCK_INIT;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sSettingCache = [NSMutableDictionary dictionary];
+        void (^flush)(NSNotification *) = ^(__unused NSNotification *note) {
+            os_unfair_lock_lock(&sSettingLock);
+            [sSettingCache removeAllObjects];
+            os_unfair_lock_unlock(&sSettingLock);
+        };
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
+                                                          object:nil
+                                                           queue:nil
+                                                      usingBlock:flush];
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                          object:nil
+                                                           queue:nil
+                                                      usingBlock:flush];
+    });
+
+    os_unfair_lock_lock(&sSettingLock);
+    NSNumber *cached = sSettingCache[setting];
+    os_unfair_lock_unlock(&sSettingLock);
+    if (cached) {
+        return cached.boolValue;
+    }
+
+    BOOL value = [[NSUserDefaults standardUserDefaults]
+                     boolForKey:[setting stringByAppendingString:@"_Enabled"]];
+
+    os_unfair_lock_lock(&sSettingLock);
+    sSettingCache[setting] = @(value);
+    os_unfair_lock_unlock(&sSettingLock);
+    return value;
+}
 
 static NSMutableArray *sFailedHookLines;
 static NSLock *sFailedHookLock;
