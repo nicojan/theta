@@ -1,4 +1,5 @@
 #import "Include/SettingsViewController.h"
+#import "Include/ThetaHelper.h"
 #import "Include/ThetaTweakCommon.h"
 #import <objc/runtime.h>
 
@@ -21,12 +22,14 @@ static const void *kThetaMessengerSettingsLPKey = &kThetaMessengerSettingsLPKey;
         UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:settingsVC];
         navController.modalPresentationStyle = UIModalPresentationPageSheet;
 
-        UIViewController *rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-        if (rootViewController) {
-            [rootViewController presentViewController:navController animated:YES completion:nil];
+        // topViewController, not keyWindow.rootViewController — presenting on a controller that
+        // already has a presented child silently no-ops.
+        UIViewController *presenter = [ThetaHelper topViewController];
+        if (presenter) {
+            [presenter presentViewController:navController animated:YES completion:nil];
         }
     } @catch (NSException *exception) {
-        NSLog(@"MessengerMode tabbar settings: %@", exception);
+        NSLog(@"[Theta] Messages long-press settings: %@", exception);
     }
 }
 
@@ -41,27 +44,9 @@ static ThetaMessengerSettingsLongPressTarget *theta_messengerSettingsLPTarget(vo
     return target;
 }
 
-static void theta_detachMessengerSettingsLongPressFromDirectInbox(id tabBarController) {
-    UIView *dm = nil;
-    @try {
-        dm = [tabBarController valueForKey:@"_directInboxButton"];
-    } @catch (__unused NSException *e) {
-    }
-    if (![dm isKindOfClass:[UIView class]]) {
-        return;
-    }
-    UILongPressGestureRecognizer *existing = objc_getAssociatedObject(dm, kThetaMessengerSettingsLPKey);
-    if (existing) {
-        [dm removeGestureRecognizer:existing];
-        objc_setAssociatedObject(dm, kThetaMessengerSettingsLPKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
+/// Long-pressing the Messages tab opens Theta settings, in every mode — same entry point as the
+/// feed gear and the home-tab long-press, not something Messenger Mode owns.
 static void theta_attachMessengerSettingsLongPressToDirectInboxIfNeeded(id tabBarController) {
-    if (!ENABLED(@"Messenger Mode")) {
-        theta_detachMessengerSettingsLongPressFromDirectInbox(tabBarController);
-        return;
-    }
     UIView *dm = nil;
     @try {
         dm = [tabBarController valueForKey:@"_directInboxButton"];
