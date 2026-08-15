@@ -6,7 +6,9 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 ## Status
 
-`./build.sh sideload` works. Produced `output/Instagram_patched.ipa` (310 MB) against Instagram **441.0.0** on 2026-08-15, injection verified (see [Verification](#verification)). **Not yet installed or run on a device** — nothing below is confirmed at runtime.
+`./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
+
+Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. The repost freeze is diagnosed and fixed (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)) but **the fix is not yet verified on device**.
 
 ## Environment
 
@@ -97,6 +99,97 @@ ls -d ffmpeg.framework ThetaResources.bundle          # → both embedded
 ```
 
 All passed. The `LC_LOAD_DYLIB` check is the one that matters — everything else can look right while the dylib is never loaded.
+
+## Instagram 442.0.0
+
+Built against **442.0.0** on 2026-08-15 (`com.burbn.instagram-442.0.0-Decrypted.ipa`). **No source changes were needed.**
+
+The ObjC surface Theta touches was diffed 441 → 442 by parsing `__objc_classlist` in every Mach-O in both bundles (main binary + 8 appex + frameworks; ~45,000 classes, ~217,000 ivars, ~312,000 methods each) and resolving Theta's plain class names against Swift-mangled ObjC names (`_TtC<n><module><n><class>`). Of the 362 classes / selectors / ivars Theta references and that exist in 441, exactly one is gone in 442:
+
+| Symbol | Used at | Impact |
+| --- | --- | --- |
+| `IGSundialViewerNavigationBarOld` | `Source/Hooks/UI/HideCreateButton.m:93` | None. It is the *second* entry in a `ThetaFirstClass` fallback list; the primary `_TtC33IGSundialViewerNavigationBarSwift28IGSundialViewerNavigationBar` is present in both versions. Instagram simply deleted the legacy class. The dead fallback can be removed whenever. |
+
+Two caveats on the method. Selector and ivar presence was checked **globally** (does this name exist on any class), not per-class, so a member that *moved* between classes would not be flagged. And a class resolving does not prove its internals are unchanged — layout and behaviour can drift without renaming. So this rules out the loud failure mode (hooks silently no-op because a name vanished); it does not substitute for running the thing.
+
+Also worth recording: `_repostView`, `_lazyRepostCountButton`, `IGMedia`, `IGVideo`, `IGBadgeButton` and ~150 other identifiers Theta references **do not exist in 441 either**. Those code paths are already dead and have nothing to do with 442.
+
+To repeat this for the next version bump:
+
+```sh
+./scripts/compat.py <old-Instagram.app> <new-Instagram.app>
+# e.g. ./scripts/compat.py /tmp/ig442/Payload/Instagram.app input/Payload/Instagram.app
+```
+
+It scrapes the identifiers out of `Source/` and `Include/` itself, so it needs no arguments beyond the two bundles, and exits non-zero if anything broke. `scripts/objcdump.py` is the underlying Mach-O parser — it decodes `DYLD_CHAINED_PTR_64` rebases, which is why a naive pointer read returns zero classes on these binaries.
+
+Note that `strings(1)` is **not** a substitute: on this binary its `-a` and whole-file modes disagree with each other, and both miss Swift class names entirely. That route reports `IGSundialViewerVerticalUFI` as a plain class when it is really `_TtC26IGSundialViewerVerticalUFI26IGSundialViewerVerticalUFI`.
+
+## Repost freeze: infinite layout loop in ToastDismiss
+
+Tapping repost froze the entire UI while the reel kept playing. Root cause is `Source/Hooks/Behavior/ToastDismiss.m`, and it is **not** version-specific — 441 is affected identically.
+
+`hook_toastView_layoutSubviews` hooks `IGActionableConfirmationToastView` (present in both 441 and 442) — that class is the *"Reposted · Undo"* confirmation toast. Inside `layoutSubviews` it set `v.transform` from a position measured with `convertPoint:toView:`. That measurement already includes the transform applied on the previous pass, so the value never converges; it oscillates between `50 − T` and `0`, and every assignment dirties layout again:
+
+| Pass | measured top | translation applied |
+| --- | --- | --- |
+| 1 | `T` | `50 − T` |
+| 2 | `50` | `0` |
+| 3 | `T` | `50 − T` |
+
+The fix backs the applied offset out of the measurement so the target is stable, and skips the assignment when it moves less than 0.5pt.
+
+Two aggravating factors worth remembering. The hook has **no `ENABLED()` gate**, so it ran for every user on every actionable toast — any confirm-with-Undo action could trigger it, not just repost. And the symptom is easy to misread: the main thread is *spinning*, not blocked, but the loop logs nothing, so syslog goes completely silent and looks like a deadlock.
+
+### How it was found
+
+The device log pinned the onset to 14:27:22.53 (last line, then nothing but `AudioQueueGetCurrentTime` at a metronomic ~82 lines/sec) but could not explain it. What actually cracked it was `crashes_and_spins/Instagram.cpu_resource-*.ips` inside a sysdiagnose — a CPU-limit report carrying microstackshot backtraces, with `Footprint: 9680 KB -> 1969.61 MB`. That memory growth is why the process disappeared mid-investigation: it was jetsammed, not force-quit.
+
+The stack contained an unnamed image whose UUID matched `Theta.dylib` exactly. Symbolicating against the build's own dSYM named the frame:
+
+```sh
+# UUID must match between the report, the shipped dylib, and the dSYM
+dwarfdump --uuid output/Payload/Instagram.app/Theta.dylib
+xcrun atos -o .theos/obj/arm64/Theta.dylib.dSYM/Contents/Resources/DWARF/Theta.dylib \
+           -arch arm64 -l <load-address> <frame-address>
+# -> hook_toastView_layoutSubviews (ToastDismiss.m)
+```
+
+`.theos/obj/arm64/Theta.dylib.dSYM` is generated on every build and the shipped dylib is stripped, so **symbolication only works against the dSYM from the same build**. Keep it if an IPA is handed to someone else to test.
+
+## Related: download button is mispositioned on 442
+
+Separate defect, found while investigating and **not yet fixed**. `SavePosts.m:1668-1677` adds Theta's download button with `addSubview:` (so it is topmost and wins hit-testing) and constrains it to `ufiLikeButton.topAnchor`. On 442 the slot directly above like is the repost control, so the download button overlaps it. With `showsMenuAsPrimaryAction = YES` it can swallow taps meant for repost.
+
+## Install with "Remove app extensions"
+
+The IPA ships 7 app extensions. Sideloadly re-signs them, and on device they fail signature validation and crash-loop: `EXC_BAD_ACCESS`, `"namespace":"CODESIGNING","indicator":"Invalid Page"` — 18 crashes of `InstagramWidgetExtensionLockScreenCameraControl` alone in one afternoon, often in pairs seconds apart.
+
+**Theta is injected into the main binary only** — `otool -L` shows zero Theta references in all 7 appex — so nothing in Theta needs them. Tick Sideloadly's "Remove app extensions" at install time. It stops the crash-relaunch churn (a small but real battery/thermal cost) and is required anyway on a free Apple ID, which caps at 3.
+
+## Performance baseline (442, post-toast-fix)
+
+Measured 2026-08-15 after ~4 minutes of normal use, via `spindump-nosymbols.txt` in a sysdiagnose:
+
+| Metric | Value | Read |
+| --- | --- | --- |
+| CPU time | 0.427s over a 2s window, 77 threads | ~21% of one core — normal for video playback |
+| Main thread | 0.179s, blocked in `mach_msg` in all 8 samples | idle in the runloop, healthy |
+| Footprint | 517 MB | normal (cf. 1969 MB during the layout loop) |
+| Theta frames in spindump | **zero** | not on any thread's stack |
+| New `cpu_resource` reports | none | no sustained CPU abuse |
+
+So Theta is not a meaningful CPU cost in steady state. A hot phone here is Instagram's own video decode, networking and `com.facebook.analytics` queues.
+
+One real inefficiency remains, worth fixing on principle rather than for heat: `ENABLED()` in `Include/ThetaTweakCommon.h` builds a key with `stringWithFormat:` and hits `NSUserDefaults` on **every** call, and it is called from render-path predicates. An unfiltered capture logged 997 Theta preference reads in 35 seconds — 42% of all CFPrefs traffic in the process — with `Enable Liquid Glass Surfaces_Enabled` read 637 times (~18/sec). CFPrefs caches, so that is a floor on the real call count. It does not show up in CPU samples, so it is a cleanliness issue, not the heat.
+
+## Capturing device logs
+
+`./scripts/theta-log.sh` captures iPhone syslog to `logs/theta-<timestamp>.log` while a bug is reproduced. `--all` for freezes (unfiltered), `--list` to check what the Mac can see.
+
+Requires `brew install libimobiledevice` (installed on this machine 2026-08-15) and the iPhone connected **over USB and unlocked**. Network pairing is not enough — `idevicesyslog -n` fails with `Could not connect to lockdownd: -8` even when `idevice_id -n` lists the device.
+
+Two dead ends, so they are not retried: `log stream --device` was **removed in macOS 26** (the flag is unrecognised), and `xcrun devicectl` has no console/syslog subcommand. Console.app remains the zero-install fallback and the script prints those steps when it cannot find a device.
 
 ## Known issues
 
