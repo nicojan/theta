@@ -22,8 +22,16 @@ static void hook_toastView_layoutSubviews(id self, SEL _cmd) {
     }
     if (!keyWindow) keyWindow = v.window;
     if (!keyWindow) return;
-    CGFloat currentTop = [v convertPoint:CGPointZero toView:keyWindow].y;
-    CGFloat translationY = kToastTopMarginFromWindow - currentTop;
+
+    // `convertPoint:toView:` already reflects the translation we applied on the previous
+    // layout pass, so the raw value oscillates between two states and each assignment
+    // dirties layout again — an infinite layout loop that pegs the main thread. Measure the
+    // UNTRANSFORMED top by backing out the applied offset, so the target is stable, and only
+    // assign when it actually moves.
+    CGFloat appliedY = v.transform.ty;
+    CGFloat untransformedTop = [v convertPoint:CGPointZero toView:keyWindow].y - appliedY;
+    CGFloat translationY = kToastTopMarginFromWindow - untransformedTop;
+    if (fabs(translationY - appliedY) < 0.5) return;
     v.transform = CGAffineTransformMakeTranslation(0, translationY);
 }
 
