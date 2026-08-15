@@ -157,9 +157,11 @@ xcrun atos -o .theos/obj/arm64/Theta.dylib.dSYM/Contents/Resources/DWARF/Theta.d
 
 `.theos/obj/arm64/Theta.dylib.dSYM` is generated on every build and the shipped dylib is stripped, so **symbolication only works against the dSYM from the same build**. Keep it if an IPA is handed to someone else to test.
 
-## Related: download button is mispositioned on 442
+## Related: download button was mispositioned on 442
 
-Separate defect, found while investigating and **not yet fixed**. `SavePosts.m:1668-1677` adds Theta's download button with `addSubview:` (so it is topmost and wins hit-testing) and constrains it to `ufiLikeButton.topAnchor`. On 442 the slot directly above like is the repost control, so the download button overlaps it. With `showsMenuAsPrimaryAction = YES` it can swallow taps meant for repost.
+Separate defect, found while investigating, **fixed but not yet verified on device**. Theta's download button is added with `addSubview:` (so it is topmost and wins hit-testing) and was constrained a fixed distance above the like button. On 442 the slot directly above like is the repost control, so the button overlapped it and, with `showsMenuAsPrimaryAction = YES`, swallowed taps meant for repost.
+
+Anchoring to a different hard-coded neighbour would break again on the next IG release, so `theta_repositionDownloadButtonClearOfSiblings` now detects an actual frame collision after layout and lifts the button clear. It settles in one step (clearing the collision ends the intersection) and carries the same epsilon guard as the toast fix, for the same reason.
 
 ## Install with "Remove app extensions"
 
@@ -181,7 +183,9 @@ Measured 2026-08-15 after ~4 minutes of normal use, via `spindump-nosymbols.txt`
 
 So Theta is not a meaningful CPU cost in steady state. A hot phone here is Instagram's own video decode, networking and `com.facebook.analytics` queues.
 
-One real inefficiency remains, worth fixing on principle rather than for heat: `ENABLED()` in `Include/ThetaTweakCommon.h` builds a key with `stringWithFormat:` and hits `NSUserDefaults` on **every** call, and it is called from render-path predicates. An unfiltered capture logged 997 Theta preference reads in 35 seconds — 42% of all CFPrefs traffic in the process — with `Enable Liquid Glass Surfaces_Enabled` read 637 times (~18/sec). CFPrefs caches, so that is a floor on the real call count. It does not show up in CPU samples, so it is a cleanliness issue, not the heat.
+One inefficiency was found and since fixed, on principle rather than for heat: `ENABLED()` built a key with `stringWithFormat:` and hit `NSUserDefaults` on **every** call, from render-path predicates. An unfiltered capture logged 997 Theta preference reads in 35 seconds — 42% of all CFPrefs traffic in the process — with `Enable Liquid Glass Surfaces_Enabled` read 637 times (~18/sec). CFPrefs caches, so that was a floor on the real call count. It never showed up in CPU samples, so it was never the heat. `ThetaSettingEnabled()` in `THGlobalsAndHooking.m` now caches the value and flushes on defaults change and on app foreground.
+
+Note when re-measuring: the numbers above came from an **unfiltered** capture. `theta-log.sh` without `--all` filters to Instagram/Theta process matches and drops most of the CoreFoundation debug lines, so preference volume is not comparable between the two modes. A filtered capture showing few reads proves nothing.
 
 ## Capturing device logs
 
