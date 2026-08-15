@@ -1,8 +1,8 @@
 # Theta
 
-Instagram tweak for jailbreak and sideload. Open Theta from the settings gear on the home feed, or by long-pressing the home tab.
+Instagram tweak for jailbreak and sideload. Open Theta from the settings gear on the home feed, or by long-pressing the home tab or the messages tab.
 
-Tested against Instagram **441.0.0**.
+Tested against Instagram **441.0.0** and **442.0.0**.
 
 ## Requirements
 

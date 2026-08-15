@@ -8,7 +8,9 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 `./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. The repost freeze is diagnosed and fixed (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)) but **the fix is not yet verified on device**.
+Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442, and the repost freeze is fixed and confirmed on device (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)).
+
+**Unverified in the current IPA** (dylib `EB77BA0E`), all three built but never exercised on device: the `ENABLED()` value cache, the download-button repositioning, and the Messages-tab long-press. `.claude/HANDOFF.md` lists what would verify each.
 
 ## Environment
 

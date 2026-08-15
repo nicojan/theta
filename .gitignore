@@ -10,3 +10,4 @@ tools/insert_dylib
 input/Payload/
 logs/
 scripts/__pycache__/
+.claude/HANDOFF.md
