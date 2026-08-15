@@ -1436,14 +1436,70 @@ static void theta_sundialHideRepostControls(UIView *ufi) {
     [ufi layoutIfNeeded];
 }
 
+static const void *kThetaDownloadButtonBottomConstraintKey = &kThetaDownloadButtonBottomConstraintKey;
+static CGFloat const kThetaDownloadButtonGap = 15.0;
+
+/// The download button is added with `addSubview:`, so it draws above its siblings and wins
+/// hit-testing. It was anchored a fixed distance above the like button, which assumed the slot
+/// directly above like was free — on IG 442 that slot is the repost control, so the button
+/// covered repost and swallowed taps meant for it.
+///
+/// Rather than hard-code a different neighbour (which the next IG release would invalidate
+/// again), detect an actual collision after layout and lift the button clear of it. Moving it
+/// fully above the colliding view means it no longer intersects, so this settles in one step;
+/// the epsilon guard stops sub-pixel drift from re-entering layout forever, which is the bug
+/// fixed in ToastDismiss.m.
+static void theta_repositionDownloadButtonClearOfSiblings(UIView *ufi) {
+    UIView *downloadButton = [ufi viewWithTag:999];
+    if (!downloadButton || downloadButton.superview != ufi) {
+        return;
+    }
+    NSLayoutConstraint *bottom = objc_getAssociatedObject(downloadButton, kThetaDownloadButtonBottomConstraintKey);
+    if (![bottom isKindOfClass:[NSLayoutConstraint class]]) {
+        return;
+    }
+
+    CGRect me = downloadButton.frame;
+    if (CGRectIsEmpty(me)) {
+        return;
+    }
+
+    CGFloat topmostCollision = CGFLOAT_MAX;
+    for (UIView *sibling in ufi.subviews) {
+        if (sibling == downloadButton || sibling.hidden || sibling.alpha <= 0.01) {
+            continue;
+        }
+        CGRect f = sibling.frame;
+        if (CGRectIsEmpty(f) || !CGRectIntersectsRect(f, me)) {
+            continue;
+        }
+        topmostCollision = MIN(topmostCollision, CGRectGetMinY(f));
+    }
+    if (topmostCollision == CGFLOAT_MAX) {
+        return; // nothing overlapping — leave the existing placement alone
+    }
+
+    CGFloat desiredBottom = topmostCollision - kThetaDownloadButtonGap;
+    if (desiredBottom - CGRectGetHeight(me) < 0) {
+        return; // would push the button off the top of the UFI; overlapping beats invisible
+    }
+    CGFloat delta = desiredBottom - CGRectGetMaxY(me);
+    if (fabs(delta) < 0.5) {
+        return;
+    }
+    bottom.constant += delta;
+}
+
 static void (*orig_sundialUFILayoutSubviews)(id self, SEL _cmd);
 static void hook_sundialUFILayoutSubviews(id self, SEL _cmd) {
     orig_sundialUFILayoutSubviews(self, _cmd);
-    if (!ENABLED(@"Hide Repost Button")) {
-        return;
-    }
     @try {
-        theta_sundialStripLazyRepostCountIfPresent((UIView *)self);
+        if (ENABLED(@"Hide Repost Button")) {
+            theta_sundialStripLazyRepostCountIfPresent((UIView *)self);
+        }
+        if (ENABLED(@"Save Media")) {
+            theta_repositionDownloadButtonClearOfSiblings((UIView *)self);
+        }
     } @catch (__unused NSException *e) {
     }
 }
@@ -1668,23 +1724,25 @@ static void hook_sundialViewerVerticalUFI(IGSundialViewerVerticalUFI *self, SEL 
 			[self addSubview:downloadButton];
             theta_configureReelDownloadMenu(downloadButton, self);
 
+			// Keep the bottom constraint around: theta_repositionDownloadButtonClearOfSiblings
+			// nudges its constant at layout time if this placement lands on another control.
+			NSLayoutConstraint *bottomConstraint = nil;
 			if ([self respondsToSelector:@selector(ufiLikeButton)]) {
-				[NSLayoutConstraint activateConstraints:@[
-					[downloadButton.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-					[downloadButton.bottomAnchor constraintEqualToAnchor:self.ufiLikeButton.topAnchor constant:15],
-					[downloadButton.widthAnchor constraintEqualToConstant:44],
-					[downloadButton.heightAnchor constraintEqualToConstant:44],
-				]];
+				bottomConstraint = [downloadButton.bottomAnchor constraintEqualToAnchor:self.ufiLikeButton.topAnchor constant:15];
 			} else if ([self respondsToSelector:@selector(likeButton)]) {
-
 				UIButton *likeButton = [self valueForKey:@"likeButton"];
+				bottomConstraint = [downloadButton.bottomAnchor constraintEqualToAnchor:likeButton.topAnchor];
+			}
 
+			if (bottomConstraint) {
 				[NSLayoutConstraint activateConstraints:@[
 					[downloadButton.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-					[downloadButton.bottomAnchor constraintEqualToAnchor:likeButton.topAnchor],
+					bottomConstraint,
 					[downloadButton.widthAnchor constraintEqualToConstant:44],
 					[downloadButton.heightAnchor constraintEqualToConstant:44],
 				]];
+				objc_setAssociatedObject(downloadButton, kThetaDownloadButtonBottomConstraintKey,
+				                         bottomConstraint, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 			}
         }
     } @catch (NSException *exception) {
