@@ -1,4 +1,5 @@
 #import <objc/runtime.h>
+#import <os/log.h>
 
 extern void THStorySeenReceiptNetworkGuardEnter(void);
 extern void THStorySeenReceiptNetworkGuardEnterWithContext(id fullscreenSectionController, id storyViewer);
@@ -80,17 +81,50 @@ static void thetaStorySkipIfEnabled(id firstDelegate) {
     } @catch (__unused NSException *e) {}
 }
 
+/// A story section controller is only useful to us if it can hand back the view model or the
+/// playhead. IG 442 points `containerView.delegate` at `IGStoryGestureNuxDismissHandler`, which
+/// answers neither — so every candidate is checked rather than trusted by position.
+static id thetaStoryValidatedSectionController(id candidate) {
+    if (!candidate) return nil;
+    if ([candidate respondsToSelector:@selector(viewModel)] ||
+        [candidate respondsToSelector:@selector(currentStoryItem)]) {
+        return candidate;
+    }
+    return nil;
+}
+
+/// The per-item context IG 442 hangs off the cell (`IGStoryItemContext`), holding the story item,
+/// the view model, and the section context. This is the supported route on current builds; the
+/// delegate walk below it is kept for older Instagram versions.
+static id thetaStoryItemContextFromCell(IGStoryFullscreenCell *cell) {
+    if (!cell) return nil;
+    id context = nil;
+    @try {
+        if ([cell respondsToSelector:@selector(currentStoryItemContext)]) {
+            context = [cell performSelector:@selector(currentStoryItemContext)];
+        }
+    } @catch (__unused NSException *e) {}
+    if (!context) context = ThetaValueForKey(cell, @"storyItemContext");
+    return context;
+}
+
 static id thetaStorySectionControllerFromCell(IGStoryFullscreenCell *cell) {
     if (!cell) return nil;
     id section = nil;
     @try {
         if ([cell respondsToSelector:@selector(delegate)]) {
-            section = [cell performSelector:@selector(delegate)];
+            section = thetaStoryValidatedSectionController([cell performSelector:@selector(delegate)]);
         }
     } @catch (__unused NSException *e) {}
     if (!section) {
         id container = ThetaValueForKey(cell, @"containerView");
-        section = ThetaValueForKey(container, @"delegate");
+        section = thetaStoryValidatedSectionController(ThetaValueForKey(container, @"delegate"));
+    }
+    if (!section) {
+        // IG 442: the section controller is the section context's current-item provider.
+        id sectionContext = ThetaValueForKey(thetaStoryItemContextFromCell(cell), @"sectionContext");
+        if (!sectionContext) sectionContext = ThetaValueForKey(cell, @"sectionContext");
+        section = thetaStoryValidatedSectionController(ThetaValueForKey(sectionContext, @"storyProvider"));
     }
     return section;
 }
@@ -135,6 +169,48 @@ static id thetaStoryViewerFromCell(IGStoryFullscreenCell *cell) {
     } @catch (__unused NSException *e) {}
 
     return nil; // never return a non-viewer object
+}
+
+/// The `IGStoryViewerViewModel` behind a cell — the object carrying `owner` and `items`.
+/// Tries the item context first (IG 442), then the section controller, then the viewer.
+static id thetaStoryViewModelFromCell(IGStoryFullscreenCell *cell) {
+    if (!cell) return nil;
+    id viewModel = ThetaValueForKey(thetaStoryItemContextFromCell(cell), @"viewModel");
+    if (!viewModel) viewModel = ThetaValueForKey(thetaStorySectionControllerFromCell(cell), @"viewModel");
+    if (!viewModel) {
+        id viewer = thetaStoryViewerFromCell(cell);
+        @try {
+            if ([viewer respondsToSelector:@selector(currentViewModel)]) {
+                viewModel = [viewer performSelector:@selector(currentViewModel)];
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    // Only hand back something that actually models a story.
+    if (viewModel && ![viewModel respondsToSelector:@selector(owner)]) return nil;
+    return viewModel;
+}
+
+/// The story item currently on screen for a cell, by the same precedence.
+static id thetaStoryCurrentItemFromCell(IGStoryFullscreenCell *cell) {
+    if (!cell) return nil;
+    id item = ThetaValueForKey(thetaStoryItemContextFromCell(cell), @"storyItem");
+    if (!item) {
+        id section = thetaStorySectionControllerFromCell(cell);
+        @try {
+            if ([section respondsToSelector:@selector(currentStoryItem)]) {
+                item = [section performSelector:@selector(currentStoryItem)];
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    if (!item) {
+        id viewer = thetaStoryViewerFromCell(cell);
+        @try {
+            if ([viewer respondsToSelector:@selector(currentStoryItem)]) {
+                item = [viewer performSelector:@selector(currentStoryItem)];
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    return item;
 }
 
 static BOOL thetaStoryMarkItemAsSeen(IGStoryFullscreenCell *cell, id item) {
@@ -300,21 +376,7 @@ static NSString *thetaStoryOwnerKey(id owner) {
 static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 	[ThetaHelper performHapticFeedbackIfEnabled];
 
-	id firstDelegate = thetaStorySectionControllerFromCell(self);
-	id currentMedia = nil;
-	@try {
-		if ([firstDelegate respondsToSelector:@selector(currentStoryItem)]) {
-			currentMedia = [firstDelegate performSelector:@selector(currentStoryItem)];
-		}
-	} @catch (__unused NSException *e) {}
-	if (!currentMedia) {
-		id viewer = thetaStoryViewerFromCell(self);
-		@try {
-			if ([viewer respondsToSelector:@selector(currentStoryItem)]) {
-				currentMedia = [viewer performSelector:@selector(currentStoryItem)];
-			}
-		} @catch (__unused NSException *e) {}
-	}
+	id currentMedia = thetaStoryCurrentItemFromCell(self);
 	if (!currentMedia) {
 		if (ENABLED(@"Show Banners")) {
 			[ThetaHelper showToastWithTitle:@"Save failed" subtitle:@"Couldn't find the current story item." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
@@ -383,29 +445,7 @@ static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 }
 
 static void downloadAllMedia(IGStoryFullscreenCell *self) {
-	id firstDelegate = nil;
-	@try {
-		if ([self respondsToSelector:@selector(delegate)]) {
-			firstDelegate = [self performSelector:@selector(delegate)];
-		} else if ([self respondsToSelector:@selector(valueForKey:)]) {
-			id container = [self valueForKey:@"containerView"];
-			if (container && [container respondsToSelector:@selector(valueForKey:)]) {
-				firstDelegate = [container valueForKey:@"delegate"];
-			}
-		}
-	} @catch (__unused NSException *e) {}
-	if (!firstDelegate) return;
-
-	id secondDelegate = nil;
-	@try {
-		secondDelegate = [firstDelegate valueForKey:@"delegate"];
-	} @catch (__unused NSException *e) {}
-	if (!secondDelegate) return;
-
-	id viewModel = nil;
-	@try {
-		viewModel = [secondDelegate valueForKey:@"currentViewModel"];
-	} @catch (__unused NSException *e) {}
+	id viewModel = thetaStoryViewModelFromCell(self);
 	if (!viewModel) return;
 
 	NSArray *items = nil;
@@ -859,27 +899,7 @@ static void handleSeenButtonLongPress(IGStoryFullscreenCell *self, UILongPressGe
 }
 
 static NSArray<IGUser *> *storyMentionUsersForCell(IGStoryFullscreenCell *self) {
-    id firstDelegate = nil;
-    @try {
-        if ([self respondsToSelector:@selector(delegate)]) {
-            firstDelegate = [self performSelector:@selector(delegate)];
-        } else if ([self respondsToSelector:@selector(valueForKey:)]) {
-            id container = [self valueForKey:@"containerView"];
-            if (container && [container respondsToSelector:@selector(valueForKey:)]) {
-                firstDelegate = [container valueForKey:@"delegate"];
-            }
-        }
-    } @catch (__unused NSException *e) {}
-    if (!firstDelegate) return @[];
-
-    id currentItem = nil;
-    @try {
-        if ([firstDelegate respondsToSelector:@selector(currentStoryItem)]) {
-            currentItem = [firstDelegate performSelector:@selector(currentStoryItem)];
-        } else {
-            currentItem = [firstDelegate valueForKey:@"currentStoryItem"];
-        }
-    } @catch (__unused NSException *e) {}
+    id currentItem = thetaStoryCurrentItemFromCell(self);
     if (!currentItem) return @[];
 
     NSArray *reelMentions = nil;
@@ -1060,30 +1080,44 @@ static void presentMentionsAlert(IGStoryFullscreenCell *self) {
     [ThetaHelper showCustomAlertWithActions:@"Story Mentions" description:@"Select a user to open their profile." actions:actions];
 }
 
+/// Logs a story-overlay setup outcome at most once per reason per 5s, so a device capture shows
+/// which link of the cell -> delegate -> viewModel -> owner chain broke without flooding syslog.
+static void theta_storyOverlayDiag(NSString *reason, NSString *detail) {
+    static NSMutableDictionary<NSString *, NSNumber *> *lastLogged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lastLogged = [NSMutableDictionary dictionary]; });
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    @synchronized (lastLogged) {
+        NSNumber *last = lastLogged[reason];
+        if (last && (now - last.doubleValue) < 5.0) return;
+        lastLogged[reason] = @(now);
+    }
+    // %{public}s — os_log redacts %@ and plain %s as <private>, which hides the class names.
+    os_log(OS_LOG_DEFAULT, "[Theta] StoryOverlay: %{public}s%{public}s",
+           reason.UTF8String ?: "(null)",
+           detail.length ? [@" — " stringByAppendingString:detail].UTF8String : "");
+}
+
 static void setupButtons(IGStoryFullscreenCell *self) {
-    id firstDelegate = nil;
-    @try {
-        if ([self respondsToSelector:@selector(delegate)]) {
-            firstDelegate = [self performSelector:@selector(delegate)];
-        } else if ([self respondsToSelector:@selector(valueForKey:)]) {
-            id container = [self valueForKey:@"containerView"];
-            if (container && [container respondsToSelector:@selector(valueForKey:)]) {
-                firstDelegate = [container valueForKey:@"delegate"];
-            }
-        }
-    } @catch (__unused NSException *e) {}
-    if (!firstDelegate) return;
-    id viewModel = nil;
-    @try { viewModel = [firstDelegate valueForKey:@"viewModel"]; } @catch (__unused NSException *e) {}
-    if (!viewModel) return;
+    id viewModel = thetaStoryViewModelFromCell(self);
+    if (!viewModel) {
+        theta_storyOverlayDiag(@"no viewModel", [NSString stringWithFormat:@"cell=%@ itemContext=%@",
+                                                 NSStringFromClass([self class]),
+                                                 NSStringFromClass([thetaStoryItemContextFromCell(self) class])]);
+        return;
+    }
     IGUser *owner = nil;
     @try { owner = [viewModel valueForKey:@"owner"]; } @catch (__unused NSException *e) {}
-    if (!owner) return;
+    if (!owner) {
+        theta_storyOverlayDiag(@"no owner", [NSString stringWithFormat:@"viewModel=%@", NSStringFromClass([viewModel class])]);
+        return;
+    }
 
     NSNumber *cellKey = @((uintptr_t)self);
     NSString *ownerKey = thetaStoryOwnerKey(owner) ?: @"";
     NSString *lastOwnerKey = lastSetupOwnerForCell[cellKey];
     if ([lastOwnerKey isKindOfClass:[NSString class]] && [lastOwnerKey isEqualToString:ownerKey] && ownerKey.length > 0) {
+        theta_storyOverlayDiag(@"skipped (same owner on this cell)", nil);
         return;
     }
     lastSetupOwnerForCell[cellKey] = ownerKey;
@@ -1236,6 +1270,11 @@ static void setupButtons(IGStoryFullscreenCell *self) {
     if (showMentions) {
         [buttonStack addObject:mentionsButton];
     }
+
+    theta_storyOverlayDiag(@"building overlay",
+                           [NSString stringWithFormat:@"buttons=%lu save=%d ghost=%d local=%d mentions=%d items=%ld",
+                            (unsigned long)buttonStack.count, downloadVideos, hideSeenState,
+                            showLocalSeenOnly, showMentions, (long)itemCount]);
 
     UIButton *previousButton = nil;
     for (UIButton *button in buttonStack) {
@@ -1453,6 +1492,7 @@ static id hook_storyGhost(id self, SEL _cmd) {
         }
     }
 
+    theta_storyOverlayDiag(@"mediaView hook fired", nil);
     @try {
         setupButtons(self);
     } @catch (NSException *exception) {

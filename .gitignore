@@ -11,3 +11,4 @@ input/Payload/
 logs/
 scripts/__pycache__/
 .claude/HANDOFF.md
+symbols/

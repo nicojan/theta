@@ -8,9 +8,11 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 `./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442, and the repost freeze is fixed and confirmed on device (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)).
+Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442; the repost freeze is fixed and confirmed on device (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), as is the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)).
 
-**Unverified in the current IPA** (dylib `EB77BA0E`), all three built but never exercised on device: the `ENABLED()` value cache, the download-button repositioning, and the Messages-tab long-press. `.claude/HANDOFF.md` lists what would verify each.
+**Unverified in the current IPA** (dylib `FC670962`): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the story *actions* behind the restored buttons — saving a story and marking one seen both ran through the same broken delegate path and have not been exercised since the fix. `.claude/HANDOFF.md` lists what would verify each.
+
+dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
 ## Environment
 
@@ -164,6 +166,16 @@ xcrun atos -o .theos/obj/arm64/Theta.dylib.dSYM/Contents/Resources/DWARF/Theta.d
 Separate defect, found while investigating, **fixed but not yet verified on device**. Theta's download button is added with `addSubview:` (so it is topmost and wins hit-testing) and was constrained a fixed distance above the like button. On 442 the slot directly above like is the repost control, so the button overlapped it and, with `showsMenuAsPrimaryAction = YES`, swallowed taps meant for repost.
 
 Anchoring to a different hard-coded neighbour would break again on the next IG release, so `theta_repositionDownloadButtonClearOfSiblings` now detects an actual frame collision after layout and lifts the button clear. It settles in one step (clearing the collision ends the intersection) and carries the same epsilon guard as the toast fix, for the same reason.
+
+## Story overlay buttons vanished on 442
+
+Every Theta control in the story viewer — download, seen, local-seen, mentions — was missing, and every story feature behind them (mark-as-seen, download-all, mentions) was silently dead. **Fixed and confirmed on device** (dylib `FC670962`).
+
+`StoryGhost.m` reached the story's view model positionally: `cell.containerView.delegate` was assumed to *be* the `IGStoryFullscreenSectionController`, and everything hung off that — `viewModel` → `owner` → the buttons, plus `currentStoryItem` for the actions. On 442 that delegate is `IGStoryGestureNuxDismissHandler`, a Swift class with no properties at all, so `setupButtons` returned before reading a single toggle. Both buttons disappearing at once was the tell: they are gated on separate settings, so a shared bail-out was the only explanation.
+
+The fix stops trusting position. `thetaStoryValidatedSectionController` accepts a candidate only if it answers `viewModel` or `currentStoryItem`; `thetaStoryViewModelFromCell` and `thetaStoryCurrentItemFromCell` try 442's `IGStoryItemContext` on the cell first (it carries `storyItem`, `viewModel` and `sectionContext` directly), then the validated section controller, then the viewer's `currentViewModel`. The old delegate paths stay ahead of the new one so older IG builds resolve unchanged, and the four hand-rolled copies of the walk now share these resolvers.
+
+Diagnostics stayed in: `[Theta] StoryOverlay: …` logs one line per reason per 5s, including `building overlay — buttons=N save=… ghost=…` on success. Use `%{public}s` for anything you need to read back — os_log redacts `%@` as `<private>`, which cost a build round-trip here.
 
 ## Install with "Remove app extensions"
 
