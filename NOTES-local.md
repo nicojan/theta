@@ -10,7 +10,7 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442; the repost freeze is fixed and confirmed on device (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), as is the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)).
 
-**Unverified in the current IPA** (dylib `FC670962`): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the story *actions* behind the restored buttons — saving a story and marking one seen both ran through the same broken delegate path and have not been exercised since the fix. `.claude/HANDOFF.md` lists what would verify each.
+**Unverified in the current IPA** (dylib `2C7E3F91`, built from a working tree with uncommitted changes to `SavePosts.m` and `StoryGhost.m`): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, the story-download crash fix and its FFmpeg fallback (see [Story video download](#story-video-download-fails-every-export-preset-refused)), and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. `.claude/HANDOFF.md` lists what would verify each.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
@@ -176,6 +176,20 @@ Every Theta control in the story viewer — download, seen, local-seen, mentions
 The fix stops trusting position. `thetaStoryValidatedSectionController` accepts a candidate only if it answers `viewModel` or `currentStoryItem`; `thetaStoryViewModelFromCell` and `thetaStoryCurrentItemFromCell` try 442's `IGStoryItemContext` on the cell first (it carries `storyItem`, `viewModel` and `sectionContext` directly), then the validated section controller, then the viewer's `currentViewModel`. The old delegate paths stay ahead of the new one so older IG builds resolve unchanged, and the four hand-rolled copies of the walk now share these resolvers.
 
 Diagnostics stayed in: `[Theta] StoryOverlay: …` logs one line per reason per 5s, including `building overlay — buttons=N save=… ghost=…` on success. Use `%{public}s` for anything you need to read back — os_log redacts `%@` as `<private>`, which cost a build round-trip here.
+
+## Story video download fails: every export preset refused
+
+**Open.** Downloading a video story ends in "Could not prepare video for saving". The export fails with `AVFoundationErrorDomain -11838` (`AVErrorOperationNotSupported`), and so does every preset `ThetaExportPhotosCompatibleMP4` walks through — nine of them, each in well under a millisecond. Failing that fast, that uniformly, means AVFoundation cannot read the source at all rather than disagreeing about a preset. AV1 is the likely answer: `SavePosts.m` has an AV1 pre-check that diverts to FFmpeg before the merge, and this file went to the merge instead, so the check ran without catching it. The detected FourCC is now logged (`[Theta] SaveVideo: source codec=…`) — it was computed and discarded, which is why this went unseen.
+
+Two changes are in the tree for it, both unverified: FFmpeg (`AV1Transcoder`) is now the last resort when every AVFoundation preset fails, and the whole recovery moved off the `AVAssetExportSession` completion handler onto a background queue. The second is a crash fix — running the fallback inside that completion handler meant nesting nine blocking export sessions inside an AVFoundation callback, and the app died ~70ms after the last preset failed.
+
+Sideloaded-app crash reports are **not** reachable via `idevicecrashreport`; corpse reports land in the osanalytics `DiagnosticReports` directory. Get them from the device: Settings → Privacy & Security → Analytics & Improvements → Analytics Data.
+
+## Reading device logs
+
+Anything you need to read back from a device capture must use `os_log` with `%{public}s`. `NSLog`'s `%@` and plain `%s` are redacted to `<private>`, which silently hides exactly the class names and error descriptions worth capturing — it cost two build-install-capture cycles here before it was spotted.
+
+Do not pipe `./build.sh` into `head`: the early pipe close kills the build with SIGPIPE partway through, leaving `output/` empty with no error message. Redirect to a file and grep that.
 
 ## Install with "Remove app extensions"
 
