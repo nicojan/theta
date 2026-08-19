@@ -1664,7 +1664,7 @@ static void * const playerKey = &playerKey;
                 // Detect video encoding
                 AVAsset *videoAsset = [AVAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
                 NSArray<AVAssetTrack *> *videoTracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
-                BOOL isAV1Video = NO;
+                BOOL needsFFmpegTranscode = NO;
                 
                 if (videoTracks.count > 0) {
                     AVAssetTrack *videoTrack = videoTracks[0];
@@ -1672,9 +1672,7 @@ static void * const playerKey = &playerKey;
                     if (formatDescriptions.count > 0) {
                         CMFormatDescriptionRef formatDesc = (__bridge CMFormatDescriptionRef)formatDescriptions[0];
                         FourCharCode codec = CMFormatDescriptionGetMediaSubType(formatDesc);
-                        if (codec == 0x61763031) { // 'av01'
-                            isAV1Video = YES;
-                        }
+                        needsFFmpegTranscode = ThetaCodecRequiresFFmpegTranscode(codec);
                     }
                 }
                 
@@ -1692,7 +1690,7 @@ static void * const playerKey = &playerKey;
                 
                 __block NSTimeInterval transcodeStartTime = [[NSDate date] timeIntervalSince1970];
                 
-                if (isAV1Video) {
+                if (needsFFmpegTranscode) {
                     // Use AV1Transcoder for AV1 videos
                     NSError *transcodeError = nil;
                     BOOL transcodeSuccess = [AV1Transcoder transcodeAV1ToH264:videoPath

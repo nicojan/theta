@@ -611,6 +611,34 @@ NSString *ThetaPrepareDashAudioForMerge(NSString *audioPath) {
     return nil;
 }
 
+BOOL ThetaCodecRequiresFFmpegTranscode(FourCharCode codec) {
+    switch (codec) {
+        case 0x61763031: // 'av01'
+        case 0x76703038: // 'vp08'
+        case 0x76703039: // 'vp09'
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+// A preset AVFoundation lists as compatible with an asset can still refuse MP4 output
+// (AppleM4A is audio-only). Asking first matters because -setOutputFileType: *raises*
+// NSInvalidArgumentException for those instead of failing softly.
+static BOOL ThetaExportSessionSupportsMPEG4(AVAssetExportSession *session) {
+    __block NSArray<AVFileType> *types = nil;
+    if ([session respondsToSelector:@selector(determineCompatibleFileTypesWithCompletionHandler:)]) {
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        [session determineCompatibleFileTypesWithCompletionHandler:^(NSArray<AVFileType> *compatible) {
+            types = compatible;
+            dispatch_semaphore_signal(sem);
+        }];
+        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
+    }
+    if (!types) types = session.supportedFileTypes;
+    return [types containsObject:AVFileTypeMPEG4];
+}
+
 BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath) {
     if (videoPath.length == 0 || outputPath.length == 0) return NO;
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -674,6 +702,10 @@ BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BO
         if ([fm fileExistsAtPath:outputPath]) [fm removeItemAtPath:outputPath error:nil];
         AVAssetExportSession *session = [AVAssetExportSession exportSessionWithAsset:composition presetName:preset];
         if (!session) continue;
+        if (!ThetaExportSessionSupportsMPEG4(session)) {
+            NSLog(@"ThetaExportPhotosCompatibleMP4 preset %@ cannot write MP4; skipping", preset);
+            continue;
+        }
         session.outputURL = outURL;
         session.outputFileType = AVFileTypeMPEG4;
         if ([session respondsToSelector:@selector(setShouldOptimizeForNetworkUse:)]) {

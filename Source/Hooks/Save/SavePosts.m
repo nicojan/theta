@@ -8,6 +8,7 @@
 #import <Photos/Photos.h>
 #import <AssetsLibrary/AssetsLibrary.h>
 #import "Include/ThetaDashManifest.h"
+#import <os/log.h>
 
 // Helper functions for cleaner code
 static void cleanupTemporaryFiles(NSString *videoPath, NSString *audioPath, NSString *outputPath) {
@@ -228,7 +229,7 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
             dispatch_semaphore_wait(videoKeysSem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)));
         }
         NSArray<AVAssetTrack *> *videoTracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
-        BOOL isAV1Video = NO;
+        BOOL needsFFmpegTranscode = NO;
         if (videoTracks.count > 0) {
             AVAssetTrack *videoTrack = videoTracks[0];
             NSArray *formatDescriptions = [videoTrack formatDescriptions];
@@ -241,15 +242,17 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                                         (char)(codec >> 8), 
                                         (char)codec];
                 
-                // Check if this is AV1 - if so, skip AVAsset merge and use FFmpeg directly
-                if (codec == 0x61763031) { // 'av01'
-                    isAV1Video = YES;
-                }
+                // AV1 *and* VP8/VP9 are unexportable by every AVAssetExportSession preset, so
+                // skip the AVAsset merge and use FFmpeg directly. IG serves story video as VP9,
+                // which is what made all nine presets fail with -11838 in under a millisecond.
+                needsFFmpegTranscode = ThetaCodecRequiresFFmpegTranscode(codec);
+                os_log(OS_LOG_DEFAULT, "[Theta] SaveVideo: source codec=%{public}s ffmpeg=%d",
+                       codecString.UTF8String ?: "????", needsFFmpegTranscode);
             }
         }
         
-        // If AV1, skip AVAsset merge and go directly to FFmpeg transcoding
-        if (isAV1Video) {
+        // If AVFoundation can't export this codec, go directly to FFmpeg transcoding
+        if (needsFFmpegTranscode) {
             
             NSString *h264OutputPath = [workDir stringByAppendingPathComponent:@"output_h264.mp4"];
             
@@ -500,8 +503,8 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                             CMFormatDescriptionRef formatDesc = (__bridge CMFormatDescriptionRef)checkFormatDescriptions[0];
                             FourCharCode codec = CMFormatDescriptionGetMediaSubType(formatDesc);
                             
-                            // Check if codec is AV1 (av01)
-                            if (codec == 0x61763031) { // 'av01'
+                            // Codecs no export preset can write (AV1, VP8/VP9)
+                            if (ThetaCodecRequiresFFmpegTranscode(codec)) {
                                 NSString *h264OutputPath = [workDir stringByAppendingPathComponent:@"output_h264.mp4"];
                                 
                                 // Remove if exists
@@ -758,12 +761,101 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                 dispatch_semaphore_signal(semaphore);
                 }
             } else {
-                NSLog(@"Export failed with status: %ld, error: %@", (long)exportSession.status, exportSession.error);
+                // %{public}s — os_log redacts %@, and the export error is the whole diagnosis here.
+                NSError *exportError = exportSession.error;
+                os_log(OS_LOG_DEFAULT,
+                       "[Theta] SaveVideo: export failed status=%ld domain=%{public}s code=%ld reason=%{public}s hasAudio=%d",
+                       (long)exportSession.status,
+                       exportError.domain.UTF8String ?: "(none)",
+                       (long)exportError.code,
+                       exportError.localizedDescription.UTF8String ?: "(none)",
+                       hasAudio);
+
+                // Recovery runs on our own queue, never inside this completion handler: it starts
+                // further export sessions and blocks on them, and nesting that inside AVFoundation's
+                // callback is not something the framework promises to survive.
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                NSString *fallbackPath = [workDir stringByAppendingPathComponent:@"output_fallback.mp4"];
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    showCompletionToast(progressToast, NO, @"Error", @"Could not prepare video for saving", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+                    [progressToast updateProgressWithTitle:@"Saving video" subtitle:@"Converting video..."];
                 });
-                                        finishJob();
-                dispatch_semaphore_signal(semaphore);
+                BOOL fallbackOK = ThetaExportPhotosCompatibleMP4(videoPath, audioPath, hasAudio, fallbackPath);
+                os_log(OS_LOG_DEFAULT, "[Theta] SaveVideo: compatible-preset fallback %{public}s",
+                       fallbackOK ? "succeeded" : "failed");
+
+                // Every AVFoundation preset refusing the source means the codec is one the export
+                // pipeline cannot read at all (AV1 is the usual case). FFmpeg can, so try it before
+                // reporting failure — the same transcoder the detected-AV1 path uses.
+                if (!fallbackOK) {
+                    NSError *transcodeError = nil;
+                    fallbackOK = [AV1Transcoder transcodeAV1ToH264:videoPath
+                                                        outputPath:fallbackPath
+                                                         audioPath:hasAudio ? audioPath : nil
+                                                             error:&transcodeError
+                                                     progressBlock:^(NSString *status, float progress) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [progressToast updateProgressWithTitle:@"Converting video" subtitle:@"" progress:progress];
+                        });
+                    }];
+                    os_log(OS_LOG_DEFAULT, "[Theta] SaveVideo: ffmpeg transcode fallback %{public}s reason=%{public}s",
+                           fallbackOK ? "succeeded" : "failed",
+                           transcodeError.localizedDescription.UTF8String ?: "(none)");
+                }
+
+                if (!fallbackOK) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        showCompletionToast(progressToast, NO, @"Error", @"Could not prepare video for saving", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+                    });
+                    finishJob();
+                    dispatch_semaphore_signal(semaphore);
+                    return;
+                }
+
+                NSInteger fallbackSaveMethod = [[NSUserDefaults standardUserDefaults] integerForKey:@"Save Method_SegmentIndex"];
+                if (fallbackSaveMethod != 0) {
+                    NSString *audioNotesDir = [documentsPath stringByAppendingPathComponent:@"AudioNotes"];
+                    if (![fm fileExistsAtPath:audioNotesDir]) {
+                        [fm createDirectoryAtPath:audioNotesDir withIntermediateDirectories:YES attributes:nil error:nil];
+                    }
+                    NSDateFormatter *formatter = [NSDateFormatter new];
+                    [formatter setDateFormat:@"yyyyMMdd-HHmmss"];
+                    NSString *destPath = [audioNotesDir stringByAppendingPathComponent:
+                                          [NSString stringWithFormat:@"Video-%@.mp4", [formatter stringFromDate:[NSDate date]]]];
+                    NSError *moveError = nil;
+                    BOOL moved = [fm moveItemAtPath:fallbackPath toPath:destPath error:&moveError];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (moved) {
+                            showCompletionToast(progressToast, YES, @"Saved to local folder!", @"Saved to local folder.", [UIImage systemImageNamed:@"checkmark.circle.fill"], nil);
+                        } else {
+                            showCompletionToast(progressToast, NO, @"Error", @"Could not move video to AudioNotes.", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+                        }
+                    });
+                    [fm removeItemAtPath:videoPath error:nil];
+                    if (hasAudio) [fm removeItemAtPath:audioPath error:nil];
+                    finishJob();
+                    dispatch_semaphore_signal(semaphore);
+                    return;
+                }
+
+                ThetaPhotoLibraryImportVideoFromURL([NSURL fileURLWithPath:fallbackPath], ^(BOOL success, NSError * _Nullable error) {
+                    if (success) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            showCompletionToast(progressToast, YES, @"Saved to camera roll!", @"Tap here to go to camera roll.", [UIImage systemImageNamed:@"checkmark.circle.fill"], [NSURL URLWithString:@"photos-redirect://"]);
+                        });
+                        [fm removeItemAtPath:videoPath error:nil];
+                        if (hasAudio) [fm removeItemAtPath:audioPath error:nil];
+                        [fm removeItemAtPath:fallbackPath error:nil];
+                    } else {
+                        os_log(OS_LOG_DEFAULT, "[Theta] SaveVideo: fallback import failed code=%ld reason=%{public}s",
+                               (long)error.code, error.localizedDescription.UTF8String ?: "(none)");
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            showCompletionToast(progressToast, NO, @"Error", @"Failed to save to camera roll", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+                        });
+                    }
+                    finishJob();
+                    dispatch_semaphore_signal(semaphore);
+                });
+                });
             }
         }];
     });

@@ -39,3 +39,6 @@ FOUNDATION_EXPORT void ThetaPhotoLibraryImportVideoFromURL(NSURL *fileURL, void 
 
 /** Re-encode with AVFoundation so Photos will accept the file (AV1 on iOS 17+). */
 FOUNDATION_EXPORT BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath);
+
+/** YES for source codecs no AVAssetExportSession preset can write: AV1 and VP8/VP9. Those must go through FFmpeg. */
+FOUNDATION_EXPORT BOOL ThetaCodecRequiresFFmpegTranscode(FourCharCode codec);

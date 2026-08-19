@@ -1,6 +1,7 @@
 #import "Include/AV1Transcoder.h"
 #import <AVFoundation/AVFoundation.h>
 #import <dlfcn.h>
+#import <os/log.h>
 
 // Include ffmpeg headers for type definitions and function declarations
 #import <libavcodec/avcodec.h>
@@ -14,6 +15,7 @@ static void *libavcodec_handle = NULL;
 static void *libavformat_handle = NULL;
 static void *libavutil_handle = NULL;
 static void *libswscale_handle = NULL;
+static void *libswresample_handle = NULL;
 
 // Define function pointer types
 #define FUNC_PTR(name) static typeof(name) *p_##name = NULL
@@ -74,6 +76,25 @@ FUNC_PTR(sws_freeContext);
         return NO; \
     }
 
+/// dlopen one ffmpeg library by name, logging the real dlerror. dlerror() clears itself on read,
+/// so it is captured once — reading it twice produced "(null)" in the NSError before.
+static void *av1LoadLibrary(NSString *basePath, NSString *name, int flags, NSError **error) {
+    NSString *path = [basePath stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"%@.framework/%@", name, name]];
+    void *handle = dlopen(path.UTF8String, flags);
+    if (!handle) {
+        const char *reason = dlerror() ?: "unknown";
+        os_log(OS_LOG_DEFAULT, "[Theta] AV1Transcoder: dlopen %{public}s failed: %{public}s",
+               name.UTF8String, reason);
+        if (error) {
+            *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to load %@: %s", name, reason]
+            }];
+        }
+    }
+    return handle;
+}
+
 static BOOL ffmpegLibrariesLoaded = NO;
 
 static BOOL loadFFmpegLibraries(NSError **error) {
@@ -106,33 +127,25 @@ static BOOL loadFFmpegLibraries(NSError **error) {
     // loading from separate framework dirs (e.g. libavcodec needs libavutil); RTLD_LOCAL
     // can cause dlopen to fail on jailbroken where the loader doesn't search other framework paths.
     int dlflags = RTLD_LAZY | RTLD_GLOBAL;
-    libavutil_handle = dlopen([[basePath stringByAppendingPathComponent:@"libavutil.framework/libavutil"] UTF8String], dlflags);
-    if (!libavutil_handle) {
-        NSLog(@"Failed to load libavutil: %s", dlerror());
-        if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to load libavutil: %s", dlerror()]}];
-        return NO;
-    }
-    
-    libswscale_handle = dlopen([[basePath stringByAppendingPathComponent:@"libswscale.framework/libswscale"] UTF8String], dlflags);
-    if (!libswscale_handle) {
-        NSLog(@"Failed to load libswscale: %s", dlerror());
-        if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to load libswscale: %s", dlerror()]}];
-        return NO;
-    }
-    
-    libavcodec_handle = dlopen([[basePath stringByAppendingPathComponent:@"libavcodec.framework/libavcodec"] UTF8String], dlflags);
-    if (!libavcodec_handle) {
-        NSLog(@"Failed to load libavcodec: %s", dlerror());
-        if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to load libavcodec: %s", dlerror()]}];
-        return NO;
-    }
-    
-    libavformat_handle = dlopen([[basePath stringByAppendingPathComponent:@"libavformat.framework/libavformat"] UTF8String], dlflags);
-    if (!libavformat_handle) {
-        NSLog(@"Failed to load libavformat: %s", dlerror());
-        if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to load libavformat: %s", dlerror()]}];
-        return NO;
-    }
+
+    // libswresample is loaded even though this file calls nothing in it: libavcodec links against
+    // it, carries no LC_RPATH of its own, and the @rpath it does carry resolves into Instagram's
+    // own Frameworks/ dir — which ships libavcodec and libavutil but no libswresample. Without our
+    // copy already resident under the same install name, dlopen(libavcodec) fails outright.
+    libavutil_handle = av1LoadLibrary(basePath, @"libavutil", dlflags, error);
+    if (!libavutil_handle) return NO;
+
+    libswresample_handle = av1LoadLibrary(basePath, @"libswresample", dlflags, error);
+    if (!libswresample_handle) return NO;
+
+    libswscale_handle = av1LoadLibrary(basePath, @"libswscale", dlflags, error);
+    if (!libswscale_handle) return NO;
+
+    libavcodec_handle = av1LoadLibrary(basePath, @"libavcodec", dlflags, error);
+    if (!libavcodec_handle) return NO;
+
+    libavformat_handle = av1LoadLibrary(basePath, @"libavformat", dlflags, error);
+    if (!libavformat_handle) return NO;
     
     // Load function pointers
     // avformat

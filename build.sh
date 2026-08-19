@@ -63,6 +63,35 @@ ensure_insert_dylib() {
 	fi
 }
 
+# Instagram ships its own libavutil/libavcodec under Instagram.app/Frameworks with the SAME
+# @rpath install names as the ffmpeg build we embed. dyld resolved our libavcodec's
+# @rpath/libavutil.framework/libavutil against Instagram's copy, which lacks
+# _av_image_copy_plane, so dlopen(libavcodec) failed and every VP9/AV1 transcode fell through to
+# an AVFoundation path that cannot read those codecs. Pointing our copy at its siblings by
+# @loader_path removes the ambiguity: each library resolves relative to its own directory inside
+# ffmpeg.framework and can no longer collide with Instagram's.
+rewrite_ffmpeg_install_names() {
+	local fw_root="$1"
+	local libs=(libavutil libswresample libswscale libavcodec libavformat libavfilter libavdevice)
+	local lib dep bin
+	echo "[Build] Rewriting ffmpeg install names to @loader_path..."
+	for lib in "${libs[@]}"; do
+		bin="$fw_root/$lib.framework/$lib"
+		[[ -f "$bin" ]] || continue
+		install_name_tool -id "@loader_path/../$lib.framework/$lib" "$bin"
+		for dep in "${libs[@]}"; do
+			[[ "$dep" == "$lib" ]] && continue
+			if otool -L "$bin" | grep -q "@rpath/$dep.framework/$dep"; then
+				install_name_tool -change "@rpath/$dep.framework/$dep" "@loader_path/../$dep.framework/$dep" "$bin"
+			fi
+		done
+		if otool -L "$bin" | grep -qE "@rpath/(libav|libsw)"; then
+			echo "!! $lib still references ffmpeg libs by @rpath" >&2
+			return 1
+		fi
+	done
+}
+
 stage_substrate_framework() {
 	# Copies CydiaSubstrate.framework into $1 (Instagram.app root)
 	local app_dir="$1"
@@ -265,6 +294,7 @@ build_sideload() {
 		rm -rf "$out_app/ffmpeg.framework"
 		# Follow symlink if present
 		cp -f -R "$ffmpeg_src" "$out_app/ffmpeg.framework"
+		rewrite_ffmpeg_install_names "$out_app/ffmpeg.framework"
 	fi
 
 	# Housekeeping
