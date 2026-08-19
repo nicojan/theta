@@ -8,9 +8,9 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 `./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and manual mark-as-seen (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
+Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
 
-**Unverified in the current IPA** (dylib `AAF59D9E`, built 2026-08-19 from a working tree with uncommitted changes): Skip On Seen — the selector fix is new and has never run on device — plus the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
+**Unverified in the current IPA** (dylib `AAF59D9E`, built 2026-08-19): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu, and which of the three skip routes actually fires — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
@@ -33,7 +33,7 @@ Each check below names the log line that decides it. Grep the capture with `grep
 | 5 | Open the first story of a tray, back out, reopen | `StoryOverlay: building overlay — buttons=4` each time | buttons missing on the recycled cell — the `prepareForReuse` hook |
 | 6 | Long-press the Messages tab | Theta settings open | nothing happens |
 | 7 | Tap the **eye** button on a story | `StorySeen: mark-current item=IGStoryItem via=item-context` then `mark-current ok=1` | `via=(none)` — no route found the current item; `ok=0` — the viewer rejected the mark. **Passed 2026-08-19** |
-| 8 | With **Skip On Seen** on, tap the eye | `StorySkip: advanced via …` naming a route, and the story advances | `StorySkip: no advance route — section=…` — the class it names is the one to add a route for. **Not yet run on device** |
+| 8 | With **Skip On Seen** on, tap the eye | `StorySkip: advanced via …` naming a route, and the story advances | `StorySkip: no advance route — section=…` — the class it names is the one to add a route for. **Passed 2026-08-19** (the story advanced; no capture was running, so which route fired is unrecorded) |
 | 9 | Long-press the **eye** button | `StorySeen: long-press fired, presenting menu`, then the menu appears | no line at all = the gesture never fired; line but no menu = the alert failed to present |
 
 If a save reports **"Saved to local folder"** rather than the camera roll, that is not a bug: **Settings → Save Method** is set to `Folder`. Those files land in `AudioNotes` inside Instagram's own Documents container, reachable only from the pink **folder icon in the top bar of Theta's settings** — not from the Files app. Switch Save Method to `Camera Roll` for camera-roll saves.
@@ -292,7 +292,7 @@ The mark now goes through `thetaStoryCurrentItemFromCell` first — the item-con
 
 The section controller is only needed for Skip On Seen, so it no longer gates the mark itself.
 
-### 2. `Skip On Seen` called a selector that no longer exists (fixed, unverified)
+### 2. `Skip On Seen` called a selector that no longer exists (fixed, confirmed 2026-08-19)
 
 `thetaStorySkipIfEnabled` guarded on `-fullscreenOverlayDidTapNextStoryButton:` and returned when it was absent. It is absent from **all** of 442 — zero implementors across 43,736 classes and 312,772 methods:
 
@@ -319,6 +319,8 @@ What 442 offers instead:
 ```
 
 The helper also resolves the section controller itself when its caller passes nil — without that, fix 1 (which deliberately stopped gating on the section controller) would leave skip with no target.
+
+Confirmed working on device 2026-08-19: tapping the eye with Skip On Seen enabled marks the story and advances. **Which route fired is not recorded** — no capture was running for that test. This still matters, because route 3 passes `0` for a navigation-action enum whose values are not in 442's metadata: if routes 1 and 2 are what fire, that guess has never actually executed. One `theta-log.sh --all` capture of a single eye tap closes the question, and the `StorySkip: advanced via …` line names the route outright.
 
 ### 3. `shouldBeSeen` latched on, silently defeating Story Ghost (fixed, confirmed live)
 
