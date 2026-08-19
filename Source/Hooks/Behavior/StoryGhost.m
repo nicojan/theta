@@ -11,6 +11,7 @@ static void downloadHDVideo(IGVideo *inputVideo);
 static UIImage *thetaColoredSystemSymbol(NSString *name, UIColor *color);
 
 static const NSInteger kThetaStoryButtonTag = 77001;
+static char kThetaStoryOwnerKeyKey;
 
 static char kThetaBtnTouchUpInsideBlockKey;
 static char kThetaBtnTouchDownBlockKey;
@@ -65,21 +66,81 @@ static void *UIGestureBlockKey = &UIGestureBlockKey;
 }
 @end
 
-static void thetaStoryAddTap(UIButton *button, void (^handler)(void)) {
+static void thetaStoryAddTap(UIButton *button, NSString *label, void (^handler)(void)) {
     if (!button || !handler) return;
     void (^copied)(void) = [handler copy];
+    NSString *name = [label copy] ?: @"button";
     [button addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-        @try { copied(); } @catch (__unused NSException *e) {}
+        // Logged unconditionally: silence here means the touch never reached the button at all,
+        // which is a different bug from a handler that ran and failed.
+        os_log(OS_LOG_DEFAULT, "[Theta] StoryOverlay: tap reached %{public}s", name.UTF8String ?: "?");
+        @try {
+            copied();
+        } @catch (NSException *e) {
+            // Swallowing this kept the app alive but made a raising handler indistinguishable
+            // from one that quietly did nothing.
+            os_log(OS_LOG_DEFAULT, "[Theta] StoryOverlay: %{public}s handler raised %{public}s",
+                   name.UTF8String ?: "?", e.reason.UTF8String ?: "(no reason)");
+        }
     }] forControlEvents:UIControlEventTouchUpInside];
 }
 
-static void thetaStorySkipIfEnabled(id firstDelegate) {
-    if (!ENABLED(@"Skip On Seen") || !firstDelegate) return;
-    if (![firstDelegate respondsToSelector:@selector(fullscreenOverlayDidTapNextStoryButton:)]) return;
-    @try {
-        [firstDelegate fullscreenOverlayDidTapNextStoryButton:nil];
-    } @catch (__unused NSException *e) {}
+static id thetaStorySectionControllerFromCell(IGStoryFullscreenCell *cell);
+
+/// Advance to the next story item after a successful mark.
+///
+/// `-fullscreenOverlayDidTapNextStoryButton:` does not exist anywhere in IG 442 — verified against
+/// the binary's ObjC metadata — so the old single-selector implementation returned at its
+/// `respondsToSelector:` guard every time and Skip On Seen silently did nothing. Three routes are
+/// tried, newest-safest first, and the one that fires is logged.
+static void thetaStorySkipIfEnabledForCell(IGStoryFullscreenCell *cell, id firstDelegate) {
+    if (!ENABLED(@"Skip On Seen")) return;
+
+    if (!firstDelegate && cell) firstDelegate = thetaStorySectionControllerFromCell(cell);
+
+    // 1. Legacy IG: the overlay delegate callback this used to rely on.
+    if ([firstDelegate respondsToSelector:@selector(fullscreenOverlayDidTapNextStoryButton:)]) {
+        @try {
+            [firstDelegate fullscreenOverlayDidTapNextStoryButton:nil];
+            os_log(OS_LOG_DEFAULT, "[Theta] StorySkip: advanced via fullscreenOverlayDidTapNextStoryButton:");
+            return;
+        } @catch (__unused NSException *e) {}
+    }
+
+    // 2. IG 442: replay the app's own next-story button handler. Preferred over route 3 because it
+    //    takes no navigation-action argument, so there is no enum value to guess wrong.
+    if (cell) {
+        id overlay = nil;
+        @try {
+            if ([cell respondsToSelector:@selector(overlayView)])
+                overlay = [cell performSelector:@selector(overlayView)];
+        } @catch (__unused NSException *e) {}
+        if (!overlay) overlay = ThetaValueForKey(cell, @"overlayView");
+        SEL nextTap = NSSelectorFromString(@"_nextStoryButtonTapped");
+        if (overlay && [overlay respondsToSelector:nextTap]) {
+            @try {
+                ((void (*)(id, SEL))objc_msgSend)(overlay, nextTap);
+                os_log(OS_LOG_DEFAULT, "[Theta] StorySkip: advanced via overlay _nextStoryButtonTapped");
+                return;
+            } @catch (__unused NSException *e) {}
+        }
+    }
+
+    // 3. IG 442 section controller. The navigation action is an analytics/behaviour tag; 0 is the
+    //    neutral default and a value it does not recognise degrades to a plain advance.
+    SEL advance = NSSelectorFromString(@"advanceToNextItemWithNavigationAction:");
+    if ([firstDelegate respondsToSelector:advance]) {
+        @try {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(firstDelegate, advance, (NSInteger)0);
+            os_log(OS_LOG_DEFAULT, "[Theta] StorySkip: advanced via advanceToNextItemWithNavigationAction:");
+            return;
+        } @catch (__unused NSException *e) {}
+    }
+
+    os_log(OS_LOG_DEFAULT, "[Theta] StorySkip: no advance route — section=%{public}s overlay=%d",
+           firstDelegate ? object_getClassName(firstDelegate) : "(nil)", cell != nil);
 }
+
 
 /// A story section controller is only useful to us if it can hand back the view model or the
 /// playhead. IG 442 points `containerView.delegate` at `IGStoryGestureNuxDismissHandler`, which
@@ -298,10 +359,17 @@ static id thetaStoryVideoObjectFromMedia(id media) {
 }
 
 static void thetaStorySaveURL(NSURL *url, BOOL isVideoHint) {
-    if (![url isKindOfClass:[NSURL class]]) return;
+    if (![url isKindOfClass:[NSURL class]]) {
+        os_log(OS_LOG_DEFAULT, "[Theta] StorySave: not a URL, nothing to download");
+        return;
+    }
+    os_log(OS_LOG_DEFAULT, "[Theta] StorySave: downloading ext=%{public}s video=%d",
+           url.pathExtension.length ? url.pathExtension.UTF8String : "(none)", isVideoHint);
     NSURLSession *session = [NSURLSession sharedSession];
     NSURLSessionDownloadTask *downloadTask = [session downloadTaskWithURL:url completionHandler:^(NSURL * _Nullable location, NSURLResponse * _Nullable response, NSError * _Nullable error) {
         if (error || !location) {
+            os_log(OS_LOG_DEFAULT, "[Theta] StorySave: download failed code=%ld reason=%{public}s",
+                   (long)error.code, error.localizedDescription.UTF8String ?: "(no location)");
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (ENABLED(@"Show Banners")) {
                     [ThetaHelper showToastWithTitle:@"Save failed" subtitle:error.localizedDescription ?: @"Download error" icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
@@ -315,7 +383,11 @@ static void thetaStorySaveURL(NSURL *url, BOOL isVideoHint) {
         NSString *permanentFilePath = [documentsPath stringByAppendingPathComponent:newFilename];
         NSError *fileError = nil;
         [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:permanentFilePath] error:&fileError];
-        if (fileError) return;
+        if (fileError) {
+            os_log(OS_LOG_DEFAULT, "[Theta] StorySave: move to Documents failed: %{public}s",
+                   fileError.localizedDescription.UTF8String ?: "(none)");
+            return;
+        }
 
         NSInteger saveMethod = [[NSUserDefaults standardUserDefaults] integerForKey:@"Save Method_SegmentIndex"];
         if (saveMethod == 0) {
@@ -326,6 +398,8 @@ static void thetaStorySaveURL(NSURL *url, BOOL isVideoHint) {
                     [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:[NSURL fileURLWithPath:permanentFilePath]];
                 }
             } completionHandler:^(BOOL success, NSError * _Nullable err) {
+                os_log(OS_LOG_DEFAULT, "[Theta] StorySave: Photos import success=%d reason=%{public}s",
+                       success, err.localizedDescription.UTF8String ?: "(none)");
                 [[NSFileManager defaultManager] removeItemAtPath:permanentFilePath error:nil];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (ENABLED(@"Show Banners")) {
@@ -338,16 +412,27 @@ static void thetaStorySaveURL(NSURL *url, BOOL isVideoHint) {
                 });
             }];
         } else {
+            // This branch used to log nothing at all, so a photo story that saved perfectly well
+            // into the local folder was indistinguishable from a tap that silently did nothing.
             NSString *audioNotesDir = [documentsPath stringByAppendingPathComponent:@"AudioNotes"];
             BOOL isDir = NO;
             if (![[NSFileManager defaultManager] fileExistsAtPath:audioNotesDir isDirectory:&isDir] || !isDir) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:audioNotesDir withIntermediateDirectories:YES attributes:nil error:nil];
             }
             NSString *destPath = [audioNotesDir stringByAppendingPathComponent:newFilename];
-            [[NSFileManager defaultManager] moveItemAtPath:permanentFilePath toPath:destPath error:nil];
+            NSError *moveError = nil;
+            BOOL moved = [[NSFileManager defaultManager] moveItemAtPath:permanentFilePath toPath:destPath error:&moveError];
+            os_log(OS_LOG_DEFAULT,
+                   "[Theta] StorySave: local-folder save method=%ld moved=%d name=%{public}s reason=%{public}s",
+                   (long)saveMethod, moved, newFilename.UTF8String,
+                   moveError.localizedDescription.UTF8String ?: "(none)");
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (ENABLED(@"Show Banners")) {
-                    [ThetaHelper showToastWithTitle:@"Saved!" subtitle:@"Saved to Documents." icon:[UIImage systemImageNamed:@"checkmark.circle.fill"] autoHide:4 openURL:nil];
+                    if (moved) {
+                        [ThetaHelper showToastWithTitle:@"Saved!" subtitle:@"Saved to AudioNotes folder." icon:[UIImage systemImageNamed:@"checkmark.circle.fill"] autoHide:4 openURL:nil];
+                    } else {
+                        [ThetaHelper showToastWithTitle:@"Save failed" subtitle:moveError.localizedDescription ?: @"Could not move into the local folder." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+                    }
                 }
             });
         }
@@ -378,6 +463,7 @@ static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 
 	id currentMedia = thetaStoryCurrentItemFromCell(self);
 	if (!currentMedia) {
+		os_log(OS_LOG_DEFAULT, "[Theta] StoryDownload: no current story item on this cell");
 		if (ENABLED(@"Show Banners")) {
 			[ThetaHelper showToastWithTitle:@"Save failed" subtitle:@"Couldn't find the current story item." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
 		}
@@ -414,6 +500,13 @@ static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 	BOOL looksVideo = (mediaType == 2) || (video != nil) || (directVideoURL != nil);
 	BOOL looksPhoto = (mediaType == 1) || (imageURL != nil && !looksVideo);
 
+	// Every branch below used to be able to return without a word, so a photo story that saved
+	// nothing looked identical to a tap that never landed.
+	os_log(OS_LOG_DEFAULT,
+	       "[Theta] StoryDownload: media=%{public}s mediaType=%ld image=%d video=%d direct=%d photo=%d",
+	       object_getClassName(currentMedia), (long)mediaType,
+	       imageURL != nil, video != nil, directVideoURL != nil, looksPhoto);
+
 	if (looksPhoto && imageURL) {
 		thetaStorySaveURL(imageURL, NO);
 		return;
@@ -424,7 +517,8 @@ static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 			downloadHDVideo(video);
 			return;
 		} @catch (NSException *exception) {
-			NSLog(@"Error downloading video: %@", exception);
+			os_log(OS_LOG_DEFAULT, "[Theta] StoryDownload: downloadHDVideo raised %{public}s",
+			       exception.reason.UTF8String ?: "(no reason)");
 		}
 	}
 
@@ -439,6 +533,7 @@ static void downloadButtonTapped(IGStoryFullscreenCell *self) {
 		return;
 	}
 
+	os_log(OS_LOG_DEFAULT, "[Theta] StoryDownload: no downloadable URL on this story item");
 	if (ENABLED(@"Show Banners")) {
 		[ThetaHelper showToastWithTitle:@"Save failed" subtitle:@"No downloadable photo/video URL on this story." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
 	}
@@ -715,7 +810,7 @@ static void thetaLocalSeenMarkCurrent(IGStoryFullscreenCell *self) {
             [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Couldn't update seen state." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
         }
     }
-    if (ok) thetaStorySkipIfEnabled(firstDelegate);
+    if (ok) thetaStorySkipIfEnabledForCell(self, firstDelegate);
 }
 
 static void thetaLocalSeenMarkAll(IGStoryFullscreenCell *self) {
@@ -770,7 +865,7 @@ static void thetaLocalSeenMarkAll(IGStoryFullscreenCell *self) {
                                 autoHide:3
                                  openURL:nil];
     }
-    thetaStorySkipIfEnabled(firstDelegate);
+    thetaStorySkipIfEnabledForCell(self, firstDelegate);
 }
 
 static void handleLocalSeenTap(IGStoryFullscreenCell *self, UIButton *sender) {
@@ -785,56 +880,102 @@ static void handleLocalSeenLongPress(IGStoryFullscreenCell *self, UILongPressGes
 static void seenButtonPressedAll(IGStoryFullscreenCell *self) {
     id firstDelegate = thetaStorySectionControllerFromCell(self);
     id secondDelegate = thetaStoryViewerFromCell(self);
-    if (!firstDelegate || !secondDelegate) return;
+    if (!firstDelegate || !secondDelegate) {
+        os_log(OS_LOG_DEFAULT, "[Theta] StorySeen: mark-all aborted — section=%d viewer=%d",
+               firstDelegate != nil, secondDelegate != nil);
+        if (ENABLED(@"Show Banners")) {
+            [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Story viewer not found." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+        }
+        return;
+    }
 
     NSArray *items = theta_storyResolvedItemsForMarkAll(firstDelegate, secondDelegate);
     if (![items isKindOfClass:[NSArray class]] || items.count == 0) {
         id viewModel = ThetaValueForKey(secondDelegate, @"currentViewModel");
         items = ThetaValueForKey(viewModel, @"items");
     }
-    if (![items isKindOfClass:[NSArray class]]) return;
-
-    for (id item in items) {
-        shouldBeSeen = true;
-        (void)thetaStoryMarkItemAsSeen(self, item);
-    }
-
-    if (ENABLED(@"Show Banners")) {
-        [ThetaHelper showToastWithTitle:@"Marked all as seen!" subtitle:@"They know we are here." icon:[UIImage systemImageNamed:@"eye"] autoHide:4 openURL:nil];
-    }
-
-    thetaStorySkipIfEnabled(firstDelegate);
-}
-
-static void seenButtonPressedCurrent(IGStoryFullscreenCell *self) {
-    id firstDelegate = thetaStorySectionControllerFromCell(self);
-    if (!firstDelegate) {
+    if (![items isKindOfClass:[NSArray class]] || items.count == 0) {
+        os_log(OS_LOG_DEFAULT, "[Theta] StorySeen: mark-all found no items to mark");
         if (ENABLED(@"Show Banners")) {
-            [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Story section not found." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+            [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"No story items found in this reel." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
         }
         return;
     }
 
-	id currentItem = nil;
-	@try {
-		if ([firstDelegate respondsToSelector:@selector(currentStoryItem)]) {
-			currentItem = [firstDelegate performSelector:@selector(currentStoryItem)];
-		}
-	} @catch (__unused NSException *e) {}
+    // `shouldBeSeen` is restored explicitly rather than left for hook_storyGhost2 to consume:
+    // if that hook never fires, a latched `true` silently sends a real receipt for every story
+    // viewed afterwards, which is the exact opposite of what Story Ghost promises.
+    BOOL priorShouldBeSeen = shouldBeSeen;
+    NSUInteger marked = 0;
+    for (id item in items) {
+        if (!item) continue;
+        shouldBeSeen = true;
+        if (thetaStoryMarkItemAsSeen(self, item)) marked++;
+    }
+    shouldBeSeen = priorShouldBeSeen;
+
+    os_log(OS_LOG_DEFAULT, "[Theta] StorySeen: mark-all marked=%lu of %lu",
+           (unsigned long)marked, (unsigned long)items.count);
+
+    if (ENABLED(@"Show Banners")) {
+        if (marked > 0) {
+            [ThetaHelper showToastWithTitle:@"Marked all as seen!" subtitle:@"They know we are here." icon:[UIImage systemImageNamed:@"eye"] autoHide:4 openURL:nil];
+        } else {
+            [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Couldn't update seen state." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+        }
+    }
+
+    if (marked > 0) thetaStorySkipIfEnabledForCell(self, firstDelegate);
+}
+
+static void seenButtonPressedCurrent(IGStoryFullscreenCell *self) {
+    // The section controller is only needed for Skip On Seen; on IG 442 `containerView.delegate`
+    // is an IGStoryGestureNuxDismissHandler that answers neither `viewModel` nor `currentStoryItem`,
+    // so resolving it must never gate the mark itself. Bailing here is what made this button dead.
+    id firstDelegate = thetaStorySectionControllerFromCell(self);
+
+    // Item-context first: this is the route the download button already uses successfully on 442.
+    id currentItem = thetaStoryCurrentItemFromCell(self);
+    const char *itemSource = currentItem ? "item-context" : "(none)";
+
+    if (!currentItem && firstDelegate) {
+        @try {
+            if ([firstDelegate respondsToSelector:@selector(currentStoryItem)]) {
+                currentItem = [firstDelegate performSelector:@selector(currentStoryItem)];
+                if (currentItem) itemSource = "section";
+            }
+        } @catch (__unused NSException *e) {}
+    }
     if (!currentItem) {
         id viewer = thetaStoryViewerFromCell(self);
         @try {
             if ([viewer respondsToSelector:@selector(currentStoryItem)]) {
                 currentItem = [viewer performSelector:@selector(currentStoryItem)];
+                if (currentItem) itemSource = "viewer";
             }
         } @catch (__unused NSException *e) {}
     }
 
-    BOOL ok = NO;
-	if (currentItem) {
-		shouldBeSeen = true;
-        ok = thetaStoryMarkItemAsSeen(self, currentItem);
-	}
+    // Every branch below used to be able to return without a word, so a mark that never happened
+    // looked exactly like a tap that never landed.
+    os_log(OS_LOG_DEFAULT,
+           "[Theta] StorySeen: mark-current item=%{public}s via=%{public}s section=%d",
+           currentItem ? object_getClassName(currentItem) : "(nil)", itemSource, firstDelegate != nil);
+
+    if (!currentItem) {
+        if (ENABLED(@"Show Banners")) {
+            [ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Couldn't find the current story item." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+        }
+        return;
+    }
+
+    // Restored explicitly — see the note in seenButtonPressedAll.
+    BOOL priorShouldBeSeen = shouldBeSeen;
+    shouldBeSeen = true;
+    BOOL ok = thetaStoryMarkItemAsSeen(self, currentItem);
+    shouldBeSeen = priorShouldBeSeen;
+
+    os_log(OS_LOG_DEFAULT, "[Theta] StorySeen: mark-current ok=%d", ok);
 
 	if (ENABLED(@"Show Banners")) {
         if (ok) {
@@ -844,10 +985,8 @@ static void seenButtonPressedCurrent(IGStoryFullscreenCell *self) {
         }
 	}
 
-	if (ok) thetaStorySkipIfEnabled(firstDelegate);
+	if (ok) thetaStorySkipIfEnabledForCell(self, firstDelegate);
 }
-
-static NSMutableDictionary *lastSetupOwnerForCell;
 
 /// Returns YES if the given IGUser's username is in the Story Ghost auto-mark list.
 static BOOL isStoryOwnerInAutoMarkList(IGUser *owner) {
@@ -871,11 +1010,6 @@ static BOOL isStoryOwnerInAutoMarkList(IGUser *owner) {
             return YES;
     }
     return NO;
-}
-
-__attribute__((constructor))
-static void StoryGhostInit() {
-    lastSetupOwnerForCell = [NSMutableDictionary dictionary];
 }
 
 static void handleDownloadButtonTap(IGStoryFullscreenCell *self, UIButton *sender) {
@@ -1113,14 +1247,23 @@ static void setupButtons(IGStoryFullscreenCell *self) {
         return;
     }
 
-    NSNumber *cellKey = @((uintptr_t)self);
+    // The memo lives on the cell itself, not in a pointer-keyed dictionary: UICollectionView
+    // recycles cells, so a raw-pointer key goes stale and a new cell at a recycled address with
+    // the same owner used to skip setup entirely — the "buttons only appear if I skip ahead and
+    // come back" symptom. Presence of the buttons is checked too, since a reused cell keeps the
+    // memo but not necessarily the subviews.
     NSString *ownerKey = thetaStoryOwnerKey(owner) ?: @"";
-    NSString *lastOwnerKey = lastSetupOwnerForCell[cellKey];
-    if ([lastOwnerKey isKindOfClass:[NSString class]] && [lastOwnerKey isEqualToString:ownerKey] && ownerKey.length > 0) {
-        theta_storyOverlayDiag(@"skipped (same owner on this cell)", nil);
+    NSString *lastOwnerKey = objc_getAssociatedObject(self, &kThetaStoryOwnerKeyKey);
+    BOOL buttonsStillPresent = NO;
+    for (UIView *subview in self.subviews) {
+        if (subview.tag == kThetaStoryButtonTag) { buttonsStillPresent = YES; break; }
+    }
+    if (buttonsStillPresent && ownerKey.length > 0 &&
+        [lastOwnerKey isKindOfClass:[NSString class]] && [lastOwnerKey isEqualToString:ownerKey]) {
+        theta_storyOverlayDiag(@"skipped (already set up for this owner)", nil);
         return;
     }
-    lastSetupOwnerForCell[cellKey] = ownerKey;
+    objc_setAssociatedObject(self, &kThetaStoryOwnerKeyKey, ownerKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     // Only remove Theta-owned controls — never strip Instagram's UIButtons.
     for (UIView *subview in [self.subviews copy]) {
@@ -1298,9 +1441,24 @@ static void setupButtons(IGStoryFullscreenCell *self) {
         previousButton = button;
     }
 
+    // If IG adds subviews after us, ours stop receiving touches even though they are visible.
+    // Recording the depth of the topmost Theta button against the sibling above it turns that
+    // into something a capture can show.
+    if (buttonStack.count) {
+        NSArray<UIView *> *siblings = self.subviews;
+        NSUInteger topThetaIndex = NSNotFound;
+        for (NSUInteger i = 0; i < siblings.count; i++) {
+            if (siblings[i].tag == kThetaStoryButtonTag) topThetaIndex = i;
+        }
+        NSString *above = (topThetaIndex != NSNotFound && topThetaIndex + 1 < siblings.count)
+            ? NSStringFromClass([siblings[topThetaIndex + 1] class]) : @"(none)";
+        theta_storyOverlayDiag(@"z-order", [NSString stringWithFormat:@"topThetaIndex=%lu of %lu, above=%@",
+                                            (unsigned long)topThetaIndex, (unsigned long)siblings.count, above]);
+    }
+
     __weak IGStoryFullscreenCell *weakSelf = self;
     if (downloadVideos) {
-        thetaStoryAddTap(downloadButton, ^{
+        thetaStoryAddTap(downloadButton, @"download", ^{
             IGStoryFullscreenCell *cell = weakSelf;
             if (cell) downloadButtonTapped(cell);
         });
@@ -1318,7 +1476,7 @@ static void setupButtons(IGStoryFullscreenCell *self) {
     }
 
     if (hideSeenState) {
-        thetaStoryAddTap(seenButton, ^{
+        thetaStoryAddTap(seenButton, @"seen", ^{
             IGStoryFullscreenCell *cell = weakSelf;
             if (cell) seenButtonPressedCurrent(cell);
         });
@@ -1339,6 +1497,8 @@ static void setupButtons(IGStoryFullscreenCell *self) {
         UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] init];
         [longPress addActionBlock:^(UIGestureRecognizer *recognizer) {
             if (((UILongPressGestureRecognizer *)recognizer).state != UIGestureRecognizerStateBegan) return;
+            // Logged unconditionally: the gesture firing and the alert presenting are separate failures.
+            os_log(OS_LOG_DEFAULT, "[Theta] StorySeen: long-press fired, presenting menu");
 
             // Determine current membership so we can show Add/Remove appropriately.
             BOOL inAutoList = NO;
@@ -1427,7 +1587,7 @@ static void setupButtons(IGStoryFullscreenCell *self) {
     }
 
     if (showLocalSeenOnly) {
-        thetaStoryAddTap(localSeenButton, ^{
+        thetaStoryAddTap(localSeenButton, @"local-seen", ^{
             IGStoryFullscreenCell *cell = weakSelf;
             if (cell) handleLocalSeenTap(cell, localSeenButton);
         });
@@ -1452,7 +1612,7 @@ static void setupButtons(IGStoryFullscreenCell *self) {
                 }
             } @catch (__unused NSException *exception) {}
         }];
-        thetaStoryAddTap(mentionsButton, ^{
+        thetaStoryAddTap(mentionsButton, @"mentions", ^{
             if (!hasMentions) return;
             IGStoryFullscreenCell *cell = weakSelf;
             if (!cell) return;
@@ -1476,7 +1636,7 @@ static void setupButtons(IGStoryFullscreenCell *self) {
                     if (container) firstDel = ThetaValueForKey(container, @"delegate");
                 }
             } @catch (__unused NSException *e) {}
-            thetaStorySkipIfEnabled(firstDel);
+            thetaStorySkipIfEnabledForCell(cell, firstDel);
         });
     }
 }
@@ -1668,10 +1828,25 @@ static void performStoryDownloadWithURL(NSURL *url) {
     }
 }
 
+static void (*orig_storyCellPrepareForReuse)(id self, SEL _cmd);
+/// A recycled cell keeps its Theta state but not necessarily its subviews, so clear the memo here
+/// and let the next `mediaView` rebuild. Without this the overlay is missing until the cell is
+/// recycled onto a different story owner.
+static void hook_storyCellPrepareForReuse(id self, SEL _cmd) {
+    @try {
+        objc_setAssociatedObject(self, &kThetaStoryOwnerKeyKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        for (UIView *subview in [[(UIView *)self subviews] copy]) {
+            if (subview.tag == kThetaStoryButtonTag) [subview removeFromSuperview];
+        }
+    } @catch (__unused NSException *e) {}
+    if (orig_storyCellPrepareForReuse) orig_storyCellPrepareForReuse(self, _cmd);
+}
+
 void THRegisterStoryGhostHooks(void) {
     Class cellCls = ThetaFirstClass(@[ @"IGStoryFullscreenCell" ]);
     Class viewerCls = ThetaFirstClass(@[ @"IGStoryViewerViewController" ]);
     NullHookMessageIfPresent(cellCls, @selector(mediaView), (void *)hook_storyGhost, &orig_storyGhost);
+    NullHookMessageIfPresent(cellCls, @selector(prepareForReuse), (void *)hook_storyCellPrepareForReuse, &orig_storyCellPrepareForReuse);
     NullHookMessageIfPresent(viewerCls, @selector(fullscreenSectionController:didMarkItemAsSeen:), (void *)hook_storyGhost2, &orig_storyGhost2);
     if (!orig_storyGhost) {
         NSLog(@"[Theta] StoryGhost: mediaView hook missing orig — overlay may be unavailable");
