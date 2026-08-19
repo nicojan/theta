@@ -8,11 +8,35 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 `./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442; the repost freeze is fixed and confirmed on device (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), as is the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)).
+Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and manual mark-as-seen (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
 
-**Unverified in the current IPA** (dylib `2C7E3F91`, built from a working tree with uncommitted changes to `SavePosts.m` and `StoryGhost.m`): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, the story-download crash fix and its FFmpeg fallback (see [Story video download](#story-video-download-fails-every-export-preset-refused)), and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. `.claude/HANDOFF.md` lists what would verify each.
+**Unverified in the current IPA** (dylib `AAF59D9E`, built 2026-08-19 from a working tree with uncommitted changes): Skip On Seen — the selector fix is new and has never run on device — plus the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
+
+## Testing the current IPA
+
+Install `output/Instagram_patched_noplugins.ipa` with Sideloadly, ticking **Remove app extensions** (see [Install](#install-with-remove-app-extensions)). Then start a capture *before* reproducing, because the interesting lines are gone by the time a toast appears:
+
+```sh
+./scripts/theta-log.sh --all      # Ctrl-C when done; writes logs/theta-<timestamp>.log
+```
+
+Each check below names the log line that decides it. Grep the capture with `grep -a` — the file has binary stretches and plain `grep` will call it binary and print nothing.
+
+| # | Do this | Pass looks like | Fail looks like |
+| --- | --- | --- | --- |
+| 1 | Download a **video** story | `SaveVideo: source codec=vp09 ffmpeg=1`, then no `AV1Transcoder: dlopen` line at all, then a file in the camera roll | any `AV1Transcoder: dlopen … failed:` line — read the reason, it is now public. **Passed 2026-08-19** |
+| 2 | Download a **photo** story | `StoryDownload: media=… mediaType=1 image=1 …` followed by `StorySave: downloading …` and either `StorySave: Photos import success=1` or `StorySave: local-folder save … moved=1` | a `StoryDownload:` line whose branch flags are all 0, or a `StorySave:` failure reason. **Passed 2026-08-19** |
+| 3 | Download an H.264 story or reel | `source codec=avc1 ffmpeg=0` and a saved file | regression — this path already worked on 2026-08-18 |
+| 4 | Repeat 1–3 a few times | no `Corpse allowed` and no `Terminating app due to uncaught exception` anywhere in the capture | the crash is back; symbolicate against `symbols/<UUID>.dSYM` |
+| 5 | Open the first story of a tray, back out, reopen | `StoryOverlay: building overlay — buttons=4` each time | buttons missing on the recycled cell — the `prepareForReuse` hook |
+| 6 | Long-press the Messages tab | Theta settings open | nothing happens |
+| 7 | Tap the **eye** button on a story | `StorySeen: mark-current item=IGStoryItem via=item-context` then `mark-current ok=1` | `via=(none)` — no route found the current item; `ok=0` — the viewer rejected the mark. **Passed 2026-08-19** |
+| 8 | With **Skip On Seen** on, tap the eye | `StorySkip: advanced via …` naming a route, and the story advances | `StorySkip: no advance route — section=…` — the class it names is the one to add a route for. **Not yet run on device** |
+| 9 | Long-press the **eye** button | `StorySeen: long-press fired, presenting menu`, then the menu appears | no line at all = the gesture never fired; line but no menu = the alert failed to present |
+
+If a save reports **"Saved to local folder"** rather than the camera roll, that is not a bug: **Settings → Save Method** is set to `Folder`. Those files land in `AudioNotes` inside Instagram's own Documents container, reachable only from the pink **folder icon in the top bar of Theta's settings** — not from the Files app. Switch Save Method to `Camera Roll` for camera-roll saves.
 
 ## Environment
 
@@ -88,6 +112,23 @@ otool -l input/Payload/Instagram.app/Instagram | grep -A4 LC_ENCRYPTION_INFO   #
 Source used: `com.burbn.instagram` 441.0.0, arm64, `cryptid 0` — matches the README's tested version.
 
 Install the output with Sideloadly / AltStore / SideStore (re-signs with an Apple ID), or TrollStore directly.
+
+## Packaging for install
+
+`build.sh sideload` produces `output/Instagram_patched.ipa` with all 7 app extensions. What actually gets installed on this machine is a copy with the extensions stripped, because a free Apple ID caps at 3 (see [Install](#install-with-remove-app-extensions)). There is no script for it; it is one command, run from `output/` after a build:
+
+```sh
+cd output && zip -qry Instagram_patched_noplugins.ipa Payload -x 'Payload/Instagram.app/PlugIns/*'
+```
+
+`-y` matters — it stores symlinks as symlinks, which the embedded frameworks rely on.
+
+Copy the dSYM out on every build you intend to install, or a crash report from that IPA cannot be symbolicated. `.theos` is overwritten by the next build:
+
+```sh
+U=$(dwarfdump --uuid output/Payload/Instagram.app/Theta.dylib | awk '{print $2}')
+mkdir -p "symbols/$U.dSYM" && cp -R .theos/obj/arm64/Theta.dylib.dSYM/ "symbols/$U.dSYM/"
+```
 
 ## Verification
 
@@ -177,19 +218,123 @@ The fix stops trusting position. `thetaStoryValidatedSectionController` accepts 
 
 Diagnostics stayed in: `[Theta] StoryOverlay: …` logs one line per reason per 5s, including `building overlay — buttons=N save=… ghost=…` on success. Use `%{public}s` for anything you need to read back — os_log redacts `%@` as `<private>`, which cost a build round-trip here.
 
-## Story video download fails: every export preset refused
+## Story video download: VP9 source, three separate faults
 
-**Open.** Downloading a video story ends in "Could not prepare video for saving". The export fails with `AVFoundationErrorDomain -11838` (`AVErrorOperationNotSupported`), and so does every preset `ThetaExportPhotosCompatibleMP4` walks through — nine of them, each in well under a millisecond. Failing that fast, that uniformly, means AVFoundation cannot read the source at all rather than disagreeing about a preset. AV1 is the likely answer: `SavePosts.m` has an AV1 pre-check that diverts to FFmpeg before the merge, and this file went to the merge instead, so the check ran without catching it. The detected FourCC is now logged (`[Theta] SaveVideo: source codec=…`) — it was computed and discarded, which is why this went unseen.
+Downloading a video story ended in "Could not prepare video for saving", and then killed the app. It was three independent bugs stacked, found over four device captures on 2026-08-17/18. Two are fixed and confirmed; the third is fixed but unverified.
 
-Two changes are in the tree for it, both unverified: FFmpeg (`AV1Transcoder`) is now the last resort when every AVFoundation preset fails, and the whole recovery moved off the `AVAssetExportSession` completion handler onto a background queue. The second is a crash fix — running the fallback inside that completion handler meant nesting nine blocking export sessions inside an AVFoundation callback, and the app died ~70ms after the last preset failed.
+### 1. The source is VP9, not AV1 (fixed, confirmed)
 
-Sideloaded-app crash reports are **not** reachable via `idevicecrashreport`; corpse reports land in the osanalytics `DiagnosticReports` directory. Get them from the device: Settings → Privacy & Security → Analytics & Improvements → Analytics Data.
+`[Theta] SaveVideo: source codec=vp09` — Instagram serves story video as VP9. `SavePosts.m` had a pre-check that diverted AV1 to FFmpeg before the AVFoundation merge, but it tested only `'av01'`, so VP9 went down the merge path. No `AVAssetExportSession` preset can write VP9, which is why the export and then all nine presets failed with `AVFoundationErrorDomain -11838` (`NSOSStatusErrorDomain -16976` underneath) in well under a millisecond each. Failing that fast and that uniformly was the tell: AVFoundation was refusing the source, not disagreeing about a preset.
+
+`ThetaCodecRequiresFFmpegTranscode()` in `ThetaDashManifest.m` now answers for `av01`, `vp08` and `vp09`, and the three codec-detection sites (`SavePosts.m` ×2, `MediaSelectionViewController.m`) all route through it. The FourCC is logged at detection — it used to be computed and thrown away, which is why this went unseen for so long.
+
+### 2. The crash was `setOutputFileType:`, not the completion handler (fixed, confirmed)
+
+The app died ~70 ms after the last preset failed. The exception, caught in an unfiltered capture 1.5 ms before the corpse:
+
+```
+*** Terminating app due to uncaught exception 'NSInvalidArgumentException',
+    reason: '*** -[AVAssetExportSession setOutputFileType:] Invalid output file type'
+```
+
+`exportPresetsCompatibleWithAsset:` returns presets compatible with the *asset*, and some of those cannot write MP4 at all (`AVAssetExportPresetAppleM4A` is audio-only). `-setOutputFileType:` **raises** for those rather than failing softly, so the tenth preset in the list terminated the app. `ThetaExportSessionSupportsMPEG4()` now asks `determineCompatibleFileTypesWithCompletionHandler:` (falling back to `supportedFileTypes`) and skips any preset that cannot write MP4.
+
+Confirmed on device: six download attempts across two builds, 16 presets skipped per attempt, no corpse. Note that the earlier theory — that the crash came from nesting the recovery inside the `AVAssetExportSession` completion handler — was **wrong**. The crash was one frame earlier, inside `ThetaExportPhotosCompatibleMP4`. The move to a background queue is still in the tree and still worth having, but it fixed nothing on its own.
+
+### 3. ffmpeg bound to Instagram's libavutil (fixed, confirmed 2026-08-19)
+
+With VP9 correctly routed to FFmpeg, the transcode still failed instantly:
+
+```
+[Theta] AV1Transcoder: dlopen libavcodec failed: dlopen(…/ffmpeg.framework/libavcodec.framework/libavcodec, 0x0009):
+    Symbol not found: _av_image_copy_plane
+```
+
+Instagram ships **its own** `libavutil.framework` and `libavcodec.framework` under `Instagram.app/Frameworks`, with the *same* `@rpath` install names as the ffmpeg build Theta embeds at the bundle root. Our `libavcodec` asked dyld for `@rpath/libavutil.framework/libavutil` and got Instagram's copy, which does not export `av_image_copy_plane`:
+
+```sh
+nm -gU output/Payload/Instagram.app/Frameworks/libavutil.framework/libavutil | grep -c av_image_copy_plane   # 0
+nm -gU output/Payload/Instagram.app/ffmpeg.framework/libavutil.framework/libavutil | grep -c av_image_copy_plane   # 2
+```
+
+Load order could not fix a name collision, so `build.sh` now rewrites our copy after embedding it: `rewrite_ffmpeg_install_names` sets each library's id and each inter-library dependency to `@loader_path/../<lib>.framework/<lib>`, which resolves relative to the library's own directory inside `ffmpeg.framework` and cannot reach Instagram's. The build fails loudly if any `@rpath` ffmpeg reference survives. Verify on a fresh build with:
+
+```sh
+otool -L output/Payload/Instagram.app/ffmpeg.framework/libavcodec.framework/libavcodec | grep -E 'loader_path|@rpath'
+```
+
+Two smaller faults were fixed alongside it. `AV1Transcoder` never loaded **libswresample**, which `libavcodec` links against and which Instagram's `Frameworks` dir does not contain — it is now in the load chain, right after libavutil. And every loader error called `dlerror()` twice, once for the log and once for the `NSError`; the second call returns `NULL`, so the error text was always `(null)`. All five loads now go through one helper that reads it once and logs `%{public}s`.
+
+### Resolved: photo stories were saving all along (2026-08-19)
+
+A photo story logged `StoryOverlay: tap reached download` and then nothing, which read as a dead button. It was in fact saving correctly — into `Documents/AudioNotes`, because **Save Method** was set to `Folder`. Two things hid it. The local-folder branch of `thetaStorySaveURL` logged nothing whatsoever, and its only confirmation toast sits behind `Show Banners`, which was off; `showCompletionToast` in `SavePosts.m` is *not* gated, which is why video saves showed a toast and photo saves did not. That branch now logs the branch taken, the filename and the move result.
+
+It also had a real latent bug: the move error was passed as `nil`, so a *failed* move still showed the success toast. Fixed.
+
+Diagnostic lesson worth keeping: an unlogged success and a silent failure are indistinguishable from the outside, and here the log's *silence* was the whole clue — `StorySave: downloading` followed 75 ms later by a `Save Method_SegmentIndex` read proved the completion handler ran to the branch, without a single line from the branch itself.
+
+Sideloaded-app crash reports are **not** reachable via `idevicecrashreport`; corpse reports land in the osanalytics `DiagnosticReports` directory. Get them from the device: Settings → Privacy & Security → Analytics & Improvements → Analytics Data. In the end none were needed here — an unfiltered `theta-log.sh --all` capture carried the `Terminating app due to uncaught exception` line with the full reason, which was faster than chasing the `.ips`.
+
+## Story seen state: mark and skip on 442
+
+Two separate faults behind one symptom — the eye button "did nothing". Both were found by capturing a tap, not by reading code: every Theta overlay button logs `StoryOverlay: tap reached <name>` unconditionally, so `tap reached seen` with nothing after it localised the bug to the handler immediately.
+
+### 1. Manual mark resolved the story item through a dead delegate path (fixed, confirmed)
+
+`seenButtonPressedCurrent` reached the current story item via `thetaStorySectionControllerFromCell` → `currentStoryItem`, then bailed if the section controller was nil. On 442 `containerView.delegate` is an `IGStoryGestureNuxDismissHandler`, which answers neither `viewModel` nor `currentStoryItem`, so that resolution returned nil and the function returned without logging a word. The download button had already been fixed for this by routing through `currentStoryItemContext`; the seen buttons never got the same treatment.
+
+The mark now goes through `thetaStoryCurrentItemFromCell` first — the item-context route already proven on 442 — falling back to section, then viewer, and logs which one won:
+
+```
+[Theta] StorySeen: mark-current item=IGStoryItem via=item-context section=0
+[Theta] StorySeen: mark-current ok=1
+```
+
+The section controller is only needed for Skip On Seen, so it no longer gates the mark itself.
+
+### 2. `Skip On Seen` called a selector that no longer exists (fixed, unverified)
+
+`thetaStorySkipIfEnabled` guarded on `-fullscreenOverlayDidTapNextStoryButton:` and returned when it was absent. It is absent from **all** of 442 — zero implementors across 43,736 classes and 312,772 methods:
+
+```sh
+python3 scripts/objcdump.py input/Payload/Instagram.app/Instagram /tmp/ig442.json
+python3 -c "import json; c=json.load(open('/tmp/ig442.json')); \
+  print([k for k,v in c.items() if 'fullscreenOverlayDidTapNextStoryButton:' in v['methods']])"
+# []
+```
+
+So Skip On Seen has been dead since the 442 upgrade, independently of the mark bug. `scripts/compat.py` is built to catch exactly this class of breakage and would have flagged it against a 441 bundle — worth running on every IG bump.
+
+What 442 offers instead:
+
+| Route | Owner | Notes |
+| --- | --- | --- |
+| `_nextStoryButtonTapped` | `IGStoryFullscreenOverlayView` | No argument — IG's own next-story handler, reachable via the cell's `overlayView` |
+| `advanceToNextItemWithNavigationAction:` | `IGStoryFullscreenSectionController` | Takes a navigation-action enum whose values are **not** recoverable from the binary's metadata |
+
+`thetaStorySkipIfEnabledForCell` tries the legacy selector, then `_nextStoryButtonTapped`, then `advanceToNextItemWithNavigationAction:` with `0`, and logs which fired. `_nextStoryButtonTapped` is preferred over the section-controller call precisely because it takes no argument and so involves no guessed enum value. If every route misses, the log names the class that was actually there:
+
+```
+[Theta] StorySkip: no advance route — section=IGStoryGestureNuxDismissHandler overlay=1
+```
+
+The helper also resolves the section controller itself when its caller passes nil — without that, fix 1 (which deliberately stopped gating on the section controller) would leave skip with no target.
+
+### 3. `shouldBeSeen` latched on, silently defeating Story Ghost (fixed, confirmed live)
+
+`shouldBeSeen` is a global in `THGlobalsAndHooking.m` that tells `hook_storyGhost2` to let one real seen receipt through. `seenButtonPressedCurrent` and `seenButtonPressedAll` set it `true` and relied on the hook to reset it — but while fault 1 was live no mark ever reached the hook, so it stayed `true` from the first tap onward and **every passively-viewed story sent a real receipt**, which is the exact opposite of what Story Ghost promises.
+
+Both handlers now save and restore it around the call, as `thetaLocalSeenMarkCurrent` always did. One missing hook produced both a dead-looking button and a privacy leak; the dead button is what got reported.
 
 ## Reading device logs
 
 Anything you need to read back from a device capture must use `os_log` with `%{public}s`. `NSLog`'s `%@` and plain `%s` are redacted to `<private>`, which silently hides exactly the class names and error descriptions worth capturing — it cost two build-install-capture cycles here before it was spotted.
 
 Do not pipe `./build.sh` into `head`: the early pipe close kills the build with SIGPIPE partway through, leaving `output/` empty with no error message. Redirect to a file and grep that.
+
+`build.sh` clears `output/` at the start of a sideload build, and that step loses a race with Finder recreating `.DS_Store` — it fails with `rm: cannot remove '…/output': Directory not empty` after having already deleted most of the tree. It happened twice on 2026-08-18. Re-running the build is enough; `find output -name .DS_Store -delete` first makes it less likely.
+
+Grep captures with `grep -a`. The syslog files contain binary stretches, and without `-a` grep reports "binary file matches" and prints nothing — which reads exactly like the log not containing the line.
 
 ## Install with "Remove app extensions"
 
@@ -226,7 +371,8 @@ Two dead ends, so they are not retried: `log stream --device` was **removed in m
 ## Known issues
 
 - **Navigation settings are broken on sideload** — tab icon order, swipe between tabs, launch tab, hide feed/explore/reels/messages tab, Messenger mode. Upstream issue, documented in `README.md`; not caused by anything here. Jailbreak builds are unaffected.
-- **Runtime unverified.** The IPA has never been installed. A launch crash or odd AVFoundation behavior points at the two deviations above before it points at tweak logic.
+- **Photo stories save nothing.** Instrumented on 2026-08-18 but not yet diagnosed — see [Story video download](#story-video-download-vp9-source-three-separate-faults).
+- **Toolchain deviations are still unproven.** Builds since 2026-08-15 install and run, so the Xcode-14 symlink and the grafted libc++ headers are not obviously harmful — but a launch crash or odd AVFoundation behaviour still points at [those two deviations](#deviations-from-readme) before it points at tweak logic.
 
 ## Disk
 
