@@ -146,17 +146,26 @@ static volatile BOOL sGlobalDownloadInProgress = NO;
         NSParagraphStyleAttributeName: paragraphStyle
     }];
     
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(width, width), NO, 0);
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, width, width)];
-    label.attributedText = attributedString;
-    label.textAlignment = NSTextAlignmentCenter;
-    label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
-    
-    [label drawTextInRect:label.bounds];
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    
-    return image;
+    // No UILabel and no UIGraphicsBeginImageContext here: both are main-thread-only,
+    // and this is called from a background queue (THTweak.m Load Banner path), which
+    // logged eight "Modifying properties of a view's layer off the main thread"
+    // faults per launch. UIGraphicsImageRenderer and NSStringDrawing are thread-safe.
+    CGRect canvas = CGRectMake(0, 0, width, width);
+    CGRect textRect = [attributedString boundingRectWithSize:canvas.size
+                                                     options:NSStringDrawingUsesLineFragmentOrigin
+                                                     context:nil];
+    // Match the vertical centring UIBaselineAdjustmentAlignCenters used to give us.
+    CGRect drawRect = CGRectMake(0,
+                                 CGRectGetMidY(canvas) - CGRectGetHeight(textRect) / 2.0,
+                                 width,
+                                 CGRectGetHeight(textRect));
+
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvas.size];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [attributedString drawWithRect:drawRect
+                               options:NSStringDrawingUsesLineFragmentOrigin
+                               context:nil];
+    }];
 }
 
 #pragma mark - File Management
