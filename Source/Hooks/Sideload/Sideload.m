@@ -1,3 +1,4 @@
+#import <os/log.h>
 static void loadKeychainAccessGroup() {
 	@try {
 		NSDictionary* dummyItem = @{
@@ -21,12 +22,10 @@ static void loadKeychainAccessGroup() {
 			NSDictionary* resultDict = (__bridge id)result;
 			keychainAccessGroup = resultDict[(__bridge id)kSecAttrAccessGroup];
 			CFRelease(result);
-			fprintf(stderr, "[Theta] sideload keychain access group: %s\n",
-			        keychainAccessGroup.UTF8String ?: "(null)");
-			fflush(stderr);
+			os_log(OS_LOG_DEFAULT, "[Theta] sideload keychain access group: %{public}s",
+			       keychainAccessGroup.UTF8String ?: "(null)");
 		} else {
-			fprintf(stderr, "[Theta] Failed to get keychain access group: %d\n", (int)ret);
-			fflush(stderr);
+			os_log(OS_LOG_DEFAULT, "[Theta] Failed to get keychain access group: %{public}d", (int)ret);
 		}
 	} @catch (NSException *exception) {
 		NSLog(@"Error loading keychain access group: %@", exception);

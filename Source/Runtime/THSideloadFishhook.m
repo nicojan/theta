@@ -1,3 +1,4 @@
+#import <os/log.h>
 /* Sideload fishhook rebindings (strlen / SecItem*) */
 // Keychain hook via fishhook (file scope)
 static OSStatus (*original_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -149,8 +150,7 @@ static OSStatus hooked_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
     // Item already in the sideload keychain — that *is* persistence.
     if (status == errSecDuplicateItem) return errSecSuccess;
     if (status != errSecSuccess) {
-        fprintf(stderr, "[Theta] SecItemAdd failed status=%d (session may not persist)\n", (int)status);
-        fflush(stderr);
+        os_log(OS_LOG_DEFAULT, "[Theta] SecItemAdd failed status=%{public}d (session may not persist)", (int)status);
     }
     return status;
 #else

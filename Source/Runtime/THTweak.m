@@ -1,3 +1,4 @@
+#import <os/log.h>
 /*
  * Tweak entry point: install all feature hooks (no DRM / license gates).
  */
@@ -107,12 +108,13 @@ static void InitializeHooks(void) {
         [sFailedHookLines removeAllObjects];
         [sFailedHookLock unlock];
         if (failed.count) {
-            // fprintf bypasses os_log privacy redaction (<private>).
-            fprintf(stderr, "[Theta] %lu hook install miss(es):\n", (unsigned long)failed.count);
+            // os_log with %{public}s, NOT fprintf: stderr from a sideloaded app never
+            // reaches the syslog relay, so these misses were invisible in every device
+            // capture. %{public}s is what keeps them from being redacted as <private>.
+            os_log(OS_LOG_DEFAULT, "[Theta] %{public}lu hook install miss(es):", (unsigned long)failed.count);
             for (NSString *line in failed) {
-                fprintf(stderr, "[Theta] miss: %s\n", line.UTF8String ?: "(null)");
+                os_log(OS_LOG_DEFAULT, "[Theta] miss: %{public}s", line.UTF8String ?: "(null)");
             }
-            fflush(stderr);
         }
     });
 }
