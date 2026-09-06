@@ -1,3 +1,4 @@
+#import <os/log.h>
 #import "Include.h"
 #import "Include/InstagramHeaders.h"
 #import "Include/ThetaTweakCommon.h"
@@ -124,6 +125,25 @@ NSArray *ThetaApplyHideFeedFiltering(NSArray *list, BOOL isMainFeed) {
                 [noSpinner addObject:obj];
         }
         out = noSpinner;
+    }
+
+    // Diagnostic: `out` is an order-preserving subsequence of `list`, so a single
+    // walk recovers exactly what was dropped, without touching the filter body.
+    // hook_hideAds calls this on every home-feed update with no toggle gate, and
+    // whether that alters the feed has never actually been observed.
+    if (out.count != list.count) {
+        NSMutableArray<NSString *> *droppedClasses = [NSMutableArray array];
+        NSUInteger oi = 0;
+        for (id obj in list) {
+            if (oi < out.count && out[oi] == obj) { oi++; continue; }
+            [droppedClasses addObject:(obj ? NSStringFromClass(object_getClass(obj)) : @"(nil)")];
+        }
+        os_log(OS_LOG_DEFAULT, "[Theta] FeedFilter: mainFeed=%{public}d in=%{public}lu out=%{public}lu dropped=%{public}s",
+               isMainFeed ? 1 : 0, (unsigned long)list.count, (unsigned long)out.count,
+               [[droppedClasses componentsJoinedByString:@","] UTF8String] ?: "?");
+    } else {
+        os_log(OS_LOG_DEFAULT, "[Theta] FeedFilter: mainFeed=%{public}d in=%{public}lu out=%{public}lu dropped=none",
+               isMainFeed ? 1 : 0, (unsigned long)list.count, (unsigned long)out.count);
     }
 
     return [out copy];

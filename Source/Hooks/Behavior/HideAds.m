@@ -1,3 +1,4 @@
+#import <os/log.h>
 #import "Include/ThetaTweakCommon.h"
 
 static NSArray *removeAdsItemsInList(NSArray *list) {
@@ -55,6 +56,8 @@ static NSArray *hook_hideAds(id self, SEL _cmd, id arg1) {
         if (disableAds) {
             result = removeAdsItemsInList(result);
         }
+        os_log(OS_LOG_DEFAULT, "[Theta] MainFeed: objectsForListAdapter -> %{public}lu objects (disableAds=%{public}d)",
+               (unsigned long)[result count], disableAds ? 1 : 0);
         return ThetaApplyHideFeedFiltering(result ?: @[], YES);
     } @catch (NSException *exception) {
         NSLog(@"Error in hideAds hook: %@", exception);
