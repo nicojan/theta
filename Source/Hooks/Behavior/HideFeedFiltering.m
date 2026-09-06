@@ -153,7 +153,12 @@ static NSArray *theta_removeAdsFromList(NSArray *list) {
 static NSArray *(*orig_sundialObjs)(id, SEL, id);
 static NSArray *hook_sundialObjs(id self, SEL _cmd, id arg1) {
     NSArray *r = orig_sundialObjs ? orig_sundialObjs(self, _cmd, arg1) : nil;
-    r = ThetaApplyHideFeedFiltering(r ?: @[], NO);
+    if (!r) r = @[];
+    // Every sibling hook below bails when its toggle is off; this one used to run
+    // the filter unconditionally, rebuilding the Reels list on every update even
+    // with all toggles off. Only two filters reach Reels, which passes isMainFeed:NO.
+    if (theta_shouldRemoveSuggestedAccounts() || theta_shouldRemoveThreadsCarousel())
+        r = ThetaApplyHideFeedFiltering(r, NO);
     if (ENABLED(@"Disable Ads"))
         r = theta_removeAdsFromList(r);
     return r;
