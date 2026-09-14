@@ -328,7 +328,7 @@ Confirmed working on device 2026-08-19: tapping the eye with Skip On Seen enable
 
 Both handlers now save and restore it around the call, as `thetaLocalSeenMarkCurrent` always did. One missing hook produced both a dead-looking button and a privacy leak; the dead button is what got reported.
 
-## Home-feed reels dead (open, 2026-09-06)
+## Home-feed reels dead (open, 2026-09-06; narrowed 2026-09-14)
 
 Home-feed reels render as a static poster and do not expand or play on tap. **The Reels tab plays normally**, the feed scrolls, and photos load — so decoding, MediaToolbox and the CDN are all fine. This is home-feed-specific. Capture: `logs/theta-20260906-130323.log` (~200 MB, unfiltered).
 
@@ -349,12 +349,35 @@ Instagram opened its last network connection at 13:04:11.66 and cancelled it at 
 - **Network, offline, VPN, iCloud Private Relay** — killed by the Reels tab playing fine.
 - **Low Power Mode, thermal throttling** — `lowPowerModeEnabled: false`, `thermalPressure: 0`.
 - **The `ENABLED()` cache** (`THGlobalsAndHooking.m:48`) — keyed correctly, flushed on both `NSUserDefaultsDidChangeNotification` and `UIApplicationDidBecomeActiveNotification`.
+- **Theta's home-feed item filtering** (`hook_hideAds` → `ThetaApplyHideFeedFiltering`) — measured on device 2026-09-14, `dropped=none` across 24 feed updates with the count never shrinking. See [Former leading suspect](#former-leading-suspect--falsified-2026-09-14).
 
-### Leading suspect (unproven)
+### Former leading suspect — falsified 2026-09-14
 
-`hook_hideAds` (`HideAds.m:58`) is bound to `IGMainFeedListAdapterDataSource objectsForListAdapter:` — the home feed — and ends with `return ThetaApplyHideFeedFiltering(result ?: @[], YES);` **unconditionally**, with no toggle gate. That is why turning settings off changed nothing: the path runs either way. Inside, the `if (isMainFeed && n <= 5)` spinner strip is likewise ungated. Rebuilding an array with identical contents *should* be invisible to IGListKit, so this is a candidate, not a conclusion. The same defect in the Reels equivalent (`hook_sundialObjs`) was fixed in 5eb628d.
+`hook_hideAds` (`HideAds.m:58`) was the candidate: bound to `IGMainFeedListAdapterDataSource objectsForListAdapter:` and ending in `return ThetaApplyHideFeedFiltering(result ?: @[], YES);` **unconditionally**, with no toggle gate, which explained why turning settings off changed nothing. The `FeedFilter` / `MainFeed` logging added in 3b0f5f1 measured it, and it is **not** the cause.
 
-`FeedFilter` / `MainFeed` logging was added in 3b0f5f1 to measure it: in/out counts per call plus the class names of anything dropped. Sideload dylib `BB6958FC` and capture a home-feed scroll and one reel tap.
+Capture `logs/theta-20260914-155107.log` (503 MB, unfiltered, 4m17s, covers a launch at 15:51:38, PID 2507, dylib `BB6958FC` confirmed by the presence of `MainFeed:` lines at all). Across **24 home-feed updates the object count never once shrank** — 1 → 4 → 6 → 10 → 15 → 21 → 27 — and every line reads `dropped=none`. The single exception is `dropped=IGSpinnerLabelViewModel` on the second update, which is the intended spinner-strip removal.
+
+So Theta removes no home-feed items, the ungated call is harmless in effect, and "the reel I was watching disappeared" is **not** Theta deleting it. The path is still ungated and still worth gating on principle, but that is tidiness, not this bug.
+
+### What the 2026-09-14 capture establishes
+
+Ten video queues were created. Frames delivered over each one's life:
+
+| Queue | Created | Total frames | Shape |
+| --- | --- | --- | --- |
+| `74ccae4000` | 15:51:40 (launch) | 266 | **0 frames for the first 48 s**, then 140 at 15:52:42 |
+| `74ccae4c00` | 15:51:42 (launch) | 473 | healthy 15:52:00–15:52:30, then **0 for the remaining 3 min** |
+| `74ccae5400` | 15:52:34 | 1 | 1 frame in 3 minutes — never alive |
+| `74ccae4400` | 15:52:05 | 2191 | normal |
+| `74cc770000` | 15:55:11 | 0 | dead |
+
+`74ccae4000` is the reported launch symptom exactly: created 2 s after launch at control-timebase `rate 1.00`, fed nothing for 48 seconds, then alive. `74ccae4c00` is its mirror — playing normally, then starving permanently at 15:52:30 while still at rate 1.00. **"Dead until I switch tabs" and "the reel I was watching is gone" are the same defect seen from two sides, not two bugs.**
+
+The starved queues all read `sbuf queue contains 0 frames (0.000 sec), max PTS: 0.000` while the timebase runs at rate 1.00. `max PTS: 0.000` on an empty buffer means nothing was **ever** enqueued into that renderer. Not a decode stall, not drain failure, not the CDN: Instagram's feed video cell creates the renderer, starts its clock, and never hands it a sample. The fault is above MediaToolbox, on the app-side feed video-cell / player path.
+
+One behavioural difference from 2026-09-06, unexplained: taps now produce real downstream work. The tap at 15:52:33 creates an audio session, a `FigAudioSessionClock` and new video queues, where the three taps in the 13:08 capture produced nothing at all. Either the off-main-thread UIKit fix (64aa757) changed it or the older session was in a worse state — do not assume the 13:08 "taps do nothing" observation still holds.
+
+Also clean in this capture: `off the main thread is not allowed` = **0** (the 64aa757 fix holds), hook install misses = **1**, still `_didPressFollowButton`.
 
 ### Method note
 
