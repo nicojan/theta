@@ -520,6 +520,8 @@ Note when re-measuring: the numbers above came from an **unfiltered** capture. `
 
 Requires `brew install libimobiledevice` (installed on this machine 2026-08-15) and the iPhone connected **over USB and unlocked**. Network pairing is not enough — `idevicesyslog -n` fails with `Could not connect to lockdownd: -8` even when `idevice_id -n` lists the device.
 
+**Stopping a capture that was started in the background** (an agent session, `nohup`, `&`): send **TERM**, not INT — `kill -TERM <wrapper pid>`. A script launched with `&` inherits SIGINT as ignored and bash cannot trap a signal ignored on entry, so `kill -INT` on the wrapper is silently a no-op: the script looks stopped while `idevicesyslog` keeps writing. **A log that is still growing reads as a complete capture** — this cost a wrong starvation number on 2026-09-15, measured from a file holding 72 of its eventual 150 stat lines. Interactive Ctrl-C was never affected; the terminal signals the whole process group. The script now reaps the child from its trap either way (`$OUT.pid`), so a clean `--- summary ---` block is the signal that the capture really stopped.
+
 Two dead ends, so they are not retried: `log stream --device` was **removed in macOS 26** (the flag is unrecognised), and `xcrun devicectl` has no console/syslog subcommand. Console.app remains the zero-install fallback and the script prints those steps when it cannot find a device.
 
 ## Known issues

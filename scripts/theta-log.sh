@@ -86,8 +86,33 @@ OUT="$LOGDIR/theta-$(date +%Y%m%d-%H%M%S).log"
 } > "$OUT"
 
 # Ctrl-C kills the capture pipeline, so the summary has to come from a trap.
+# The trap must also reap idevicesyslog by pid. Interactively the terminal
+# signals the whole process group and the child dies with us, but a signal
+# sent to this script alone (nohup, kill <pid>, a background runner) leaves
+# idevicesyslog writing -- and a log that is still growing reads as a complete
+# capture, silently truncating whatever is measured from it.
+#
+# Stopping a BACKGROUNDED capture: send TERM, not INT. A script started with &
+# inherits SIGINT as ignored, and bash cannot trap a signal that was ignored on
+# entry, so `kill -INT` on the wrapper is silently a no-op and the capture runs
+# on. Interactive Ctrl-C is unaffected -- the terminal signals the whole group.
+# Deterministic path, not mktemp: mktemp here is GNU, which rejects `-t prefix`
+# ("too few X's in template") and returns empty -- leaving the trap with no pid
+# to kill and the capture running on after the script exits.
+PIDFILE="$OUT.pid"
 summarise() {
 	trap - EXIT INT TERM
+	SYSLOG_PID="$(cat "$PIDFILE" 2>/dev/null)"
+	if [ -n "$SYSLOG_PID" ] && kill -0 "$SYSLOG_PID" 2>/dev/null; then
+		kill -INT "$SYSLOG_PID" 2>/dev/null
+		# let it close the relay and let tee drain before anything is counted
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			kill -0 "$SYSLOG_PID" 2>/dev/null || break
+			sleep 0.3
+		done
+		kill -KILL "$SYSLOG_PID" 2>/dev/null
+	fi
+	rm -f "$PIDFILE"
 	[ -s "$OUT" ] || return 0
 	echo
 	echo "======================================================================"
@@ -105,8 +130,15 @@ echo "==> Writing: $OUT"
 echo "==> Reproduce the bug now. Press Ctrl-C when done."
 echo
 
+# idevicesyslog runs backgrounded inside the pipeline so its pid can be
+# recorded for the trap; $! on the pipeline itself would name tee instead.
+# The pipeline is then backgrounded too and waited on, because bash defers a
+# trap until the current foreground command returns -- and this pipeline never
+# returns on its own, so a foreground pipeline here means the trap never fires.
+# The `wait` builtin, by contrast, is interrupted to run traps.
 if [ "$MODE" = "all" ]; then
-	idevicesyslog -u "$USB_UDID" 2>&1 | tee -a "$OUT"
+	{ idevicesyslog -u "$USB_UDID" 2>&1 & echo $! > "$PIDFILE"; wait; } | tee -a "$OUT" &
 else
-	idevicesyslog -u "$USB_UDID" -m Instagram -m Theta 2>&1 | tee -a "$OUT"
+	{ idevicesyslog -u "$USB_UDID" -m Instagram -m Theta 2>&1 & echo $! > "$PIDFILE"; wait; } | tee -a "$OUT" &
 fi
+wait $!
