@@ -6,17 +6,26 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 ## Status
 
-`./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
+`./build.sh sideload` works. Current `output/Instagram_patched.ipa` (296 MB) is built against Instagram **447.0.0** (2026-09-14), injection verified (see [Verification](#verification)). `build.sh` wipes `output/` on each run, so only the most recent IPA survives — anything worth keeping goes to `artifacts/`, which currently holds:
+
+| File | What it is |
+| --- | --- |
+| `Instagram_447_theta.ipa` | 447 feature build, installed on nPhone 2026-09-14 |
+| `Instagram_447_control2.ipa` | 447 control, `--control=2` (no hooks installed) |
+| `Instagram_442_control2.ipa` | 442 control, for comparison against the 442 baseline capture |
+| `Instagram_stock442_control.ipa` | dead end — re-signed stock 442 cannot log in, do not re-run |
+
+The 442 payload is preserved at `input/Payload_442/` so `compat.py` has an old bundle to diff against on the next bump.
 
 Runtime status: installed and run on device (iPhone 16 Pro Max). **Every on-device confirmation below was made on iOS 26.6; the phone now runs iOS 27.0** (`./sideload devices`, 2026-09-14) — none of them has been re-checked on 27. Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
 
-**Unverified in the current IPA** (dylib `AAF59D9E`, built 2026-08-19): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu, and which of the three skip routes actually fires — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
+**Unverified in the current IPA** (dylib `9BF6CA69`, built 2026-09-14 against 447 — every item below was last checked on 442, so all of them are now also unverified on 447): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu, and which of the three skip routes actually fires — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
 ## Testing the current IPA
 
-Install with `./sideload install --ipa output/Instagram_patched.ipa` (app extensions are stripped by default — see [App extensions](#app-extensions-are-stripped-at-install)). Then start a capture *before* reproducing, because the interesting lines are gone by the time a toast appears:
+Install with `./sideload install --ipa output/Instagram_patched.ipa` (app extensions are stripped by default unless `--keep-extensions` — see [App extensions](#app-extensions-are-stripped-at-install)). Then start a capture *before* reproducing, because the interesting lines are gone by the time a toast appears:
 
 ```sh
 ./scripts/theta-log.sh --all      # Ctrl-C when done; writes logs/theta-<timestamp>.log
@@ -335,7 +344,9 @@ Confirmed working on device 2026-08-19: tapping the eye with Skip On Seen enable
 
 Both handlers now save and restore it around the call, as `thetaLocalSeenMarkCurrent` always did. One missing hook produced both a dead-looking button and a privacy leak; the dead button is what got reported.
 
-## Home-feed reels dead (open, 2026-09-06; narrowed 2026-09-14)
+## Home-feed reels dead (open 2026-09-06; narrowed 2026-09-14; does not reproduce on 447)
+
+> **2026-09-14, 447.0.0 — the symptom is gone, but this is an eyeball, not a measurement.** After upgrading nPhone to Instagram 447 with the normal Theta feature build (`artifacts/Instagram_447_theta.ipa`), home-feed reels play. No capture was taken, so there is no frames-per-queue number to set against the 442 baseline's `0 frames, max PTS 0.000` — the claim rests on one launch, watched. That is weak evidence for a fault whose 442 symptom was specifically launch-time ("dead at launch until I switch tabs"). **Do not close this section until a `--all` capture on 447 shows the queues being fed.** Everything below is the 442 evidence and stands on its own; if 447 holds up, the reading is that the defect was Instagram's and Meta fixed it — which is what the 442 evidence already pointed at, since the starvation sits above MediaToolbox and Theta's feed filter drops nothing.
 
 Home-feed reels render as a static poster and do not expand or play on tap. **The Reels tab plays normally**, the feed scrolls, and photos load — so decoding, MediaToolbox and the CDN are all fine. This is home-feed-specific. Capture: `logs/theta-20260906-130323.log` (~200 MB, unfiltered).
 
