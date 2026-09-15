@@ -373,17 +373,35 @@ One behavioural difference from 2026-09-06, unexplained: taps now produce real d
 
 Also clean in this capture: `off the main thread is not allowed` = **0** (the 64aa757 fix holds), hook install misses = **1**, still `_didPressFollowButton`.
 
-### Next step: the stock control (built, not yet run)
+### The stock control is unusable — re-signed stock 442 cannot log in (falsified 2026-09-14)
 
-The remaining question is whether this is Theta's bug at all. `artifacts/Instagram_stock442_control.ipa` (315 MB) is stock Instagram **442.0.0** packaged straight from the untouched `input/Payload/Instagram.app` — verified to contain no `Theta.dylib` and no injected load command. Install it with `./sideload install --ipa artifacts/Instagram_stock442_control.ipa`, capture a home-feed session, and summarise frames per video queue:
+The stock-control plan is dead, and not for a tooling reason. A re-signed stock Instagram 442 aborts roughly twelve seconds after sign-in, every time, on thread `com.instagram.burbn.IGDirectMDCoreSyncAccountSessionHolder.serial` — Direct's account-session sync. `SIGABRT`, `abort() called`, no assertion text in the log. Reproduced four times across two independent signers. A control that cannot reach the home feed cannot answer the reel question, so **do not rebuild or re-run `artifacts/Instagram_stock442_control.ipa` expecting it to work.**
+
+| Build | Signer | Extensions | Result |
+|---|---|---|---|
+| Stock 442 | `./sideload`, paid team `3CY4DX3K45` | removed | crash on account-session sync |
+| Stock 442 | Sideloadly, same paid team | kept | crash, identical signature |
+| Theta 442 | `./sideload`, same team | kept | logs in fine |
+
+All three on nPhone, iOS 27.0 (24A437), within 45 minutes. That eliminates the obvious suspects: **iOS 27.0 is not the cause** (the Theta build ran logged-in on 27.0 at both 15:51 and 19:56), and neither is the signer, the team, the entitlement set nor extension stripping — Sideloadly granted strictly more (suffixed app groups, `inter-app-audio`) and crashed the same way. The only variable left is stock versus patched.
+
+Mechanism, by correlation rather than proof: a re-signed build cannot reach Meta's shared keychain groups. `securityd` returns `-34018` for `group.com.facebook.family` and for `T84QZS65DQ.platformFamily` — and note that second prefix is **hardcoded in Instagram's own code**, not derived from its entitlements, so no re-signing by any tool can ever satisfy it. Stock 442 retries that path relentlessly and dies; the working Theta build barely touches it.
+
+| Build | `group.com.facebook.family` denials | `T84QZS65DQ.platformFamily` denials |
+|---|---|---|
+| Stock, `./sideload` | 158 | 8 |
+| Stock, Sideloadly | 196 | 8 |
+| Theta (works) | 4 | 0 |
+
+Not proven: Instagram logs no assertion text, so the link from denial to abort is strong correlation across four runs, not a demonstrated cause. Proving it needs a debugger attached at the abort (`get-task-allow` is already set). Rejected as a fix: granting the missing groups — app-group and keychain-group identifiers are globally unique and belong to Meta, so they cannot be registered to team `3CY4DX3K45`.
+
+Logs: stock crashes `logs/theta-20260914-191906.log` and `logs/theta-20260914-194338.log`; the working Theta login `logs/theta-20260914-195214.log`.
+
+**Replacement control to build instead:** a Theta build with every feature toggled off, rather than a stock build. It isolates Theta's *features* instead of Theta's *presence*, which is the better-posed question anyway, and unlike stock it can actually log in. Reels still starving with everything off is the upstream verdict. Summarise with the same one-liner:
 
 ```sh
 grep -a "FigVideoQueueGMStats" logs/theta-<newest>.log | sed -E 's/.*\(0x([0-9a-f]+)\) ([0-9]+) frames.*/\1 \2/' | awk '{t[$1]+=$2; n[$1]++} END{for(q in t) print q, "samples="n[q], "frames="t[q]}'
 ```
-
-Starved queues present in stock → upstream Instagram bug, Theta is innocent, close it. Stock clean → Theta causes it. Same bundle ID, so the control replaces the patched build; restore it afterwards with `./sideload install --ipa output/Instagram_patched.ipa`. Expect to sign in to Instagram again on each swap — re-signing changes the keychain access group.
-
-It lives in `artifacts/`, **not** `output/`, on purpose: `build.sh:246` runs `rm -rf "$output_dir"` and the next build would delete it. `*.ipa` is gitignored, so it is safe there.
 
 Supporting but not conclusive: `Source/` contains **no Theta hook on the home-feed video-cell playback lifecycle** — nothing on `willDisplay`, `didEndDisplaying`, autoplay or visibility for feed cells, and the only `prepareForReuse` hook is the story cell's (`StoryGhost.m:1849`). The nearest video-adjacent hooks, `NoBrainrot.m` (`IGUnifiedVideoCollectionView didMoveToWindow`, gated on Disable Scrolling Reels) and `TapControls.m` (`IGSundialPlaybackControlsTestConfiguration`), are both Sundial/Reels-tab surfaces, and the Reels tab plays fine.
 
