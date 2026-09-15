@@ -80,6 +80,7 @@ If Theos device install is already configured (`THEOS_DEVICE_IP`), `make install
 2. Run `./build.sh sideload`. That compiles `Theta.dylib` with `SIDELOAD=1`, injects it into the Instagram binary, stages `CydiaSubstrate.framework`, and writes `output/Instagram_patched.ipa`.
 
 3. Install that IPA:
+   - **`./sideload`** — `./sideload install --ipa output/Instagram_patched.ipa` re-signs with a local Apple Development certificate and installs over USB. See [scripts/sideload/README.md](scripts/sideload/README.md).
    - **Sideloadly / AltStore / SideStore** — open `output/Instagram_patched.ipa` and let the tool re-sign it with your Apple ID.
    - **TrollStore** — install the IPA on-device.
 

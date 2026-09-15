@@ -8,7 +8,7 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 `./build.sh sideload` works. Current `output/Instagram_patched.ipa` (307 MB) is built against Instagram **442.0.0** (2026-08-15), injection verified (see [Verification](#verification)). An earlier 441.0.0 build was produced the same day; `build.sh` wipes `output/` on each run, so only the most recent IPA survives.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max, iOS 26.6). Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
+Runtime status: installed and run on device (iPhone 16 Pro Max). **Every on-device confirmation below was made on iOS 26.6; the phone now runs iOS 27.0** (`./sideload devices`, 2026-09-14) — none of them has been re-checked on 27. Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
 
 **Unverified in the current IPA** (dylib `AAF59D9E`, built 2026-08-19): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu, and which of the three skip routes actually fires — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
 
@@ -16,7 +16,7 @@ dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is over
 
 ## Testing the current IPA
 
-Install `output/Instagram_patched_noplugins.ipa` with Sideloadly, ticking **Remove app extensions** (see [Install](#install-with-remove-app-extensions)). Then start a capture *before* reproducing, because the interesting lines are gone by the time a toast appears:
+Install with `./sideload install --ipa output/Instagram_patched.ipa` (app extensions are stripped by default — see [App extensions](#app-extensions-are-stripped-at-install)). Then start a capture *before* reproducing, because the interesting lines are gone by the time a toast appears:
 
 ```sh
 ./scripts/theta-log.sh --all      # Ctrl-C when done; writes logs/theta-<timestamp>.log
@@ -111,17 +111,11 @@ otool -l input/Payload/Instagram.app/Instagram | grep -A4 LC_ENCRYPTION_INFO   #
 
 Source used: `com.burbn.instagram` 441.0.0, arm64, `cryptid 0` — matches the README's tested version.
 
-Install the output with Sideloadly / AltStore / SideStore (re-signs with an Apple ID), or TrollStore directly.
+Install the output with `./sideload` (re-signs with the local Apple Development certificate — see [scripts/sideload/README.md](scripts/sideload/README.md)), or TrollStore directly.
 
 ## Packaging for install
 
-`build.sh sideload` produces `output/Instagram_patched.ipa` with all 7 app extensions. What actually gets installed on this machine is a copy with the extensions stripped, because a free Apple ID caps at 3 (see [Install](#install-with-remove-app-extensions)). There is no script for it; it is one command, run from `output/` after a build:
-
-```sh
-cd output && zip -qry Instagram_patched_noplugins.ipa Payload -x 'Payload/Instagram.app/PlugIns/*'
-```
-
-`-y` matters — it stores symlinks as symlinks, which the embedded frameworks rely on.
+`build.sh sideload` produces `output/Instagram_patched.ipa` with all 7 app extensions. `./sideload` strips them during install, so the separate `_noplugins.ipa` copy this file used to describe is obsolete — do not rebuild it (see [App extensions](#app-extensions-are-stripped-at-install)).
 
 Copy the dSYM out on every build you intend to install, or a crash report from that IPA cannot be symbolicated. `.theos` is overwritten by the next build:
 
@@ -381,13 +375,13 @@ Also clean in this capture: `off the main thread is not allowed` = **0** (the 64
 
 ### Next step: the stock control (built, not yet run)
 
-The remaining question is whether this is Theta's bug at all. `artifacts/Instagram_stock442_control.ipa` (315 MB) is stock Instagram **442.0.0** packaged straight from the untouched `input/Payload/Instagram.app` — verified to contain no `Theta.dylib` and no injected load command. Sideload it with **"Remove app extensions"** ticked, capture a home-feed session, and summarise frames per video queue:
+The remaining question is whether this is Theta's bug at all. `artifacts/Instagram_stock442_control.ipa` (315 MB) is stock Instagram **442.0.0** packaged straight from the untouched `input/Payload/Instagram.app` — verified to contain no `Theta.dylib` and no injected load command. Install it with `./sideload install --ipa artifacts/Instagram_stock442_control.ipa`, capture a home-feed session, and summarise frames per video queue:
 
 ```sh
 grep -a "FigVideoQueueGMStats" logs/theta-<newest>.log | sed -E 's/.*\(0x([0-9a-f]+)\) ([0-9]+) frames.*/\1 \2/' | awk '{t[$1]+=$2; n[$1]++} END{for(q in t) print q, "samples="n[q], "frames="t[q]}'
 ```
 
-Starved queues present in stock → upstream Instagram bug, Theta is innocent, close it. Stock clean → Theta causes it. Same bundle ID, so the control replaces the patched build; re-sideload afterwards.
+Starved queues present in stock → upstream Instagram bug, Theta is innocent, close it. Stock clean → Theta causes it. Same bundle ID, so the control replaces the patched build; restore it afterwards with `./sideload install --ipa output/Instagram_patched.ipa`. Expect to sign in to Instagram again on each swap — re-signing changes the keychain access group.
 
 It lives in `artifacts/`, **not** `output/`, on purpose: `build.sh:246` runs `rm -rf "$output_dir"` and the next build would delete it. `*.ipa` is gitignored, so it is safe there.
 
@@ -413,11 +407,13 @@ How to tell the two failure modes apart: a redacted `os_log`/`NSLog` line still 
 
 **Absence of `[Theta]` lines is not proof the code didn't run.** Check first whether the capture even covered a launch: a launch emits `strlen/SecItem* hooks installed`, `sideload keychain access group: …`, and the miss report within ~3 s of each other. If those are missing, the capture started after launch and every launch-time conclusion drawn from it is unfounded.
 
-## Install with "Remove app extensions"
+## App extensions are stripped at install
 
-The IPA ships 7 app extensions. Sideloadly re-signs them, and on device they fail signature validation and crash-loop: `EXC_BAD_ACCESS`, `"namespace":"CODESIGNING","indicator":"Invalid Page"` — 18 crashes of `InstagramWidgetExtensionLockScreenCameraControl` alone in one afternoon, often in pairs seconds apart.
+The IPA ships 7 app extensions. Re-signed, they fail signature validation on device and crash-loop: `EXC_BAD_ACCESS`, `"namespace":"CODESIGNING","indicator":"Invalid Page"` — 18 crashes of `InstagramWidgetExtensionLockScreenCameraControl` alone in one afternoon, often in pairs seconds apart.
 
-**Theta is injected into the main binary only** — `otool -L` shows zero Theta references in all 7 appex — so nothing in Theta needs them. Tick Sideloadly's "Remove app extensions" at install time. It stops the crash-relaunch churn (a small but real battery/thermal cost) and is required anyway on a free Apple ID, which caps at 3.
+**Theta is injected into the main binary only** — `otool -L` shows zero Theta references in all 7 appex — so nothing in Theta needs them. `./sideload` removes them by default; there is nothing to remember at install time. Pass `--keep-extensions` to override, which is almost never right: they depend on Meta's app groups, and a re-signed build does not hold those.
+
+The old rationale in this file — "required anyway on a free Apple ID, which caps at 3" — no longer applies. Sideloadly signed with a **free** Apple ID (`nicoxjan@gmail.com`, per its cached certificate); `./sideload` signs with the **paid** team `3CY4DX3K45`, which has no 3-app cap and issues year-long profiles instead of 7-day ones. Stripping is still correct, for the app-group reason above rather than the cap.
 
 ## Performance baseline (442, post-toast-fix)
 
