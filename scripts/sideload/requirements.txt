@@ -1,0 +1,3 @@
+# The TUI's only dependency. The CLI and pipeline need nothing beyond the
+# standard library and the tools Xcode already installs.
+textual>=8.0

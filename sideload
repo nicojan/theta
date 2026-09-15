@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Sideload an IPA to a connected iOS device. `./sideload` opens the interface;
+# `./sideload --help` lists the scriptable commands.
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python="$repo/.venv-sideload/bin/python"
+if [[ ! -x "$python" ]]; then
+	echo "sideload: no virtualenv at .venv-sideload" >&2
+	echo "  create it with: uv venv .venv-sideload && uv pip install --python .venv-sideload/bin/python textual" >&2
+	exit 1
+fi
+
+cd "$repo"
+if [[ $# -eq 0 ]]; then
+	exec "$python" -m scripts.sideload tui
+fi
+exec "$python" -m scripts.sideload "$@"

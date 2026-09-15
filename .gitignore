@@ -9,6 +9,8 @@ default.profraw
 tools/insert_dylib
 input/Payload/
 logs/
-scripts/__pycache__/
+__pycache__/
 .claude/HANDOFF.md
 symbols/
+.venv-sideload/
+docs/superpowers/specs/*.local.md
