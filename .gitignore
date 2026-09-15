@@ -14,3 +14,4 @@ __pycache__/
 symbols/
 .venv-sideload/
 docs/superpowers/specs/*.local.md
+input/Payload_*/
