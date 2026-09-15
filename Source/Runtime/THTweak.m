@@ -7,6 +7,15 @@ static void InitializeHooks(void) {
     if (hooksInitialized) return;
     hooksInitialized = YES;
 
+#if defined(THETA_CONTROL) && THETA_CONTROL >= 2
+    // Control build, level 2: install no feature hooks at all. Every THRegister* call below
+    // swizzles unconditionally and only consults ENABLED() inside the hook body, so level 1
+    // leaves the whole swizzle set in place — a clean level-1 capture would exonerate the
+    // toggles, not the dylib. Level 2 is the build that puts the dylib's hooking itself on
+    // trial while keeping the sideload keychain/container shims that make login possible.
+    os_log(OS_LOG_DEFAULT, "[Theta] CONTROL BUILD level 2: no feature hooks installed");
+    return;
+#else
     THRegisterStoryAutoAdvanceHooks();
     THRegisterTabBarHooks();
     THRegisterExternalBrowserHooks();
@@ -117,6 +126,7 @@ static void InitializeHooks(void) {
             }
         }
     });
+#endif
 }
 
 #ifdef SIDELOAD
@@ -163,6 +173,14 @@ static void RunSideloadSetupOnce(void) {
 }
 #endif
 
+// Theta's own profile-image prefetch is a network fetch the stock app never makes. A control
+// build must not add traffic of its own to a capture, so level 2 skips it.
+static void THPrefetchProfileImageUnlessControl(void) {
+#if !defined(THETA_CONTROL) || THETA_CONTROL < 2
+    [THProfileAnalyzerViewController prefetchProfileImageIfNeeded];
+#endif
+}
+
 static void StartTweakWhenReady(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIApplicationState state = UIApplication.sharedApplication.applicationState;
@@ -188,13 +206,13 @@ static void ObserveAppLifecycle(void) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
         StartTweakWhenReady();
-        [THProfileAnalyzerViewController prefetchProfileImageIfNeeded];
+        THPrefetchProfileImageUnlessControl();
     }];
     StartTweakWhenReady();
 #ifdef SIDELOAD
     RunSideloadSetupOnce();
 #endif
-    [THProfileAnalyzerViewController prefetchProfileImageIfNeeded];
+    THPrefetchProfileImageUnlessControl();
 }
 
 __attribute__((constructor))
@@ -205,7 +223,9 @@ static void ThetaLoad(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ RunSideloadSetupOnce(); });
 #endif
 
+#if !defined(THETA_CONTROL) || THETA_CONTROL < 2
     THRegisterLiquidGlassTabBarEarlyHooks();
+#endif
 
     appVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     NSString *thetaProject = [NSString stringWithUTF8String:THETA_PROJECT];
@@ -214,13 +234,15 @@ static void ThetaLoad(void) {
     }
     NSLog(@"Theta %@ | Instagram %s | Hello!", thetaProject, appVersion.UTF8String);
 
+#if !defined(THETA_CONTROL) || THETA_CONTROL < 2
     [ThetaHelper cleanupTemporaryMediaFiles];
+#endif
 
     dispatch_async(dispatch_get_main_queue(), ^{
         ObserveAppLifecycle();
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        [THProfileAnalyzerViewController prefetchProfileImageIfNeeded];
+        THPrefetchProfileImageUnlessControl();
     });
 }
 

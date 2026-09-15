@@ -48,13 +48,26 @@ Theta_CFLAGS += -fobjc-arc \
 # FFmpeg headers (runtime loaded via dlopen)
 Theta_CFLAGS += -I"$(THEOS_PROJECT_DIR)/layout/Library/Application Support/ffmpeg.framework"
 
+# Control build for A/B captures. Not a shipping configuration.
+#   THETA_CONTROL=1  every feature forced off (ENABLED() always NO); hooks still installed
+#   THETA_CONTROL=2  level 1 plus: no feature hooks installed at all
+# Sideload keychain/container plumbing is kept at every level — without it the app cannot
+# log in, which is exactly what killed the re-signed stock control.
+empty :=
+space := $(empty) $(empty)
+CONTROL_TAG :=
+ifneq ($(THETA_CONTROL),)
+	Theta_CFLAGS += -DTHETA_CONTROL=$(THETA_CONTROL)
+	CONTROL_TAG := $(space)control$(THETA_CONTROL)
+endif
+
 ifeq ($(SIDELOAD), 1)
-	Theta_CFLAGS += -DTHETA_PROJECT='"theta Jailed v$(THEOS_PACKAGE_BASE_VERSION)"'
+	Theta_CFLAGS += -DTHETA_PROJECT='"theta Jailed v$(THEOS_PACKAGE_BASE_VERSION)$(CONTROL_TAG)"'
 	CODESIGN_IPA = 0
 	TARGET_CODESIGN =
 	LDID_FLAGS =
 else
-	Theta_CFLAGS += -DTHETA_PROJECT='"theta v$(THEOS_PACKAGE_BASE_VERSION)"'
+	Theta_CFLAGS += -DTHETA_PROJECT='"theta v$(THEOS_PACKAGE_BASE_VERSION)$(CONTROL_TAG)"'
 endif
 
 include $(THEOS_MAKE_PATH)/tweak.mk

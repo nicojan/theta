@@ -46,6 +46,12 @@ static NSTimeInterval s_lastToastShowTime = 0;
  * out-of-process write cannot leave it stale.
  */
 BOOL ThetaSettingEnabled(NSString *setting) {
+#if defined(THETA_CONTROL) && THETA_CONTROL >= 1
+    // Control build: every feature reads as off regardless of what is stored in prefs, so a
+    // capture cannot be contaminated by whatever the device happened to have toggled on.
+    // Note this only silences feature *behaviour* — at level 1 every hook is still installed.
+    return NO;
+#else
     if (setting.length == 0) {
         return NO;
     }
@@ -84,6 +90,7 @@ BOOL ThetaSettingEnabled(NSString *setting) {
     sSettingCache[setting] = @(value);
     os_unfair_lock_unlock(&sSettingLock);
     return value;
+#endif
 }
 
 static NSMutableArray *sFailedHookLines;

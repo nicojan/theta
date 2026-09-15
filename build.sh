@@ -16,6 +16,23 @@ fi
 export COPYFILE_DISABLE=1
 
 MODE="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
+
+# Control build level for A/B captures (see Makefile). Accepts --control=N or THETA_CONTROL=N.
+THETA_CONTROL="${THETA_CONTROL:-}"
+for arg in "${@:2}"; do
+	case "$arg" in
+		--control=*) THETA_CONTROL="${arg#--control=}" ;;
+		*) echo "[Build] Unknown argument: $arg"; exit 1 ;;
+	esac
+done
+if [[ -n "$THETA_CONTROL" ]]; then
+	if [[ "$THETA_CONTROL" != "1" && "$THETA_CONTROL" != "2" ]]; then
+		echo "[Build] ERROR: --control must be 1 or 2 (got '$THETA_CONTROL')"
+		exit 1
+	fi
+	export THETA_CONTROL
+	echo "[Build] CONTROL BUILD level $THETA_CONTROL — not a shipping build"
+fi
 # Default = rootful
 if [[ -z "$MODE" || "$MODE" == "rootful" ]]; then
 	MODE="rootful"
@@ -23,11 +40,15 @@ fi
 
 usage() {
 	cat <<'EOF'
-Usage: ./build.sh [rootful|rootless|sideload]
+Usage: ./build.sh [rootful|rootless|sideload] [--control=1|2]
 
   (no args) / rootful   Build a rootful jailbreak package
   rootless              Build a rootless jailbreak package
   sideload              Build SIDELOAD=1 dylib and inject into input/Payload
+
+  --control=1           Control build: every feature forced off, hooks still installed
+  --control=2           Control build: also installs no feature hooks at all
+                        (sideload keychain/container shims are kept at both levels)
 
 Sideload expects a decrypted Instagram IPA unpacked as:
   input/Payload/Instagram.app/...
@@ -203,7 +224,11 @@ build_sideload() {
 	local input_payload="$SCRIPT_DIR/input/Payload"
 	local output_dir="$SCRIPT_DIR/output"
 	local output_payload="$output_dir/Payload"
-	local ipa_out="$output_dir/Instagram_patched.ipa"
+	local ipa_name="Instagram_patched.ipa"
+	if [[ -n "${THETA_CONTROL:-}" ]]; then
+		ipa_name="Instagram_control${THETA_CONTROL}.ipa"
+	fi
+	local ipa_out="$output_dir/$ipa_name"
 	local app_dir="" app_name="" binary_name="" out_app="" out_bin="" patched="" dylib_src=""
 
 	if [[ ! -d "$input_payload" ]]; then
@@ -305,7 +330,7 @@ build_sideload() {
 	rm -f "$ipa_out"
 	(
 		cd "$output_dir"
-		zip -9 -r "Instagram_patched.ipa" Payload
+		zip -9 -r "$ipa_name" Payload
 	)
 
 	echo "[Build] Sideload IPA ready:"
