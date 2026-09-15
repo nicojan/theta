@@ -19,7 +19,7 @@ The 442 payload is preserved at `input/Payload_442/` so `compat.py` has an old b
 
 Runtime status: installed and run on device (iPhone 16 Pro Max). **Every on-device confirmation below was made on iOS 26.6; the phone now runs iOS 27.0** (`./sideload devices`, 2026-09-14) — none of them has been re-checked on 27. Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
 
-**Unverified in the current IPA** (dylib `9BF6CA69`, built 2026-09-14 against 447 — every item below was last checked on 442, so all of them are now also unverified on 447): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu, and which of the three skip routes actually fires — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
+**Unverified in the current IPA** (dylib `9BF6CA69`, built 2026-09-14 against 447 — every item below was last checked on 442, so all of them are now also unverified on 447): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu. **Confirmed on 447 by the 2026-09-15 capture:** `Skip On Seen` advances via `overlay _nextStoryButtonTapped` (the three-route question is closed), manual mark-as-seen fires, and the story overlay builds — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
@@ -42,7 +42,7 @@ Each check below names the log line that decides it. Grep the capture with `grep
 | 5 | Open the first story of a tray, back out, reopen | `StoryOverlay: building overlay — buttons=4` each time | buttons missing on the recycled cell — the `prepareForReuse` hook |
 | 6 | Long-press the Messages tab | Theta settings open | nothing happens |
 | 7 | Tap the **eye** button on a story | `StorySeen: mark-current item=IGStoryItem via=item-context` then `mark-current ok=1` | `via=(none)` — no route found the current item; `ok=0` — the viewer rejected the mark. **Passed 2026-08-19** |
-| 8 | With **Skip On Seen** on, tap the eye | `StorySkip: advanced via …` naming a route, and the story advances | `StorySkip: no advance route — section=…` — the class it names is the one to add a route for. **Passed 2026-08-19** (the story advanced; no capture was running, so which route fired is unrecorded) |
+| 8 | With **Skip On Seen** on, tap the eye | `StorySkip: advanced via …` naming a route, and the story advances | `StorySkip: no advance route — section=…` — the class it names is the one to add a route for. **Passed 2026-08-19**, and re-confirmed with a capture on 447 on 2026-09-15: the route is `overlay _nextStoryButtonTapped`, five clean fires |
 | 9 | Long-press the **eye** button | `StorySeen: long-press fired, presenting menu`, then the menu appears | no line at all = the gesture never fired; line but no menu = the alert failed to present |
 
 If a save reports **"Saved to local folder"** rather than the camera roll, that is not a bug: **Settings → Save Method** is set to `Folder`. Those files land in `AudioNotes` inside Instagram's own Documents container, reachable only from the pink **folder icon in the top bar of Theta's settings** — not from the Files app. Switch Save Method to `Camera Roll` for camera-roll saves.
@@ -344,9 +344,11 @@ Confirmed working on device 2026-08-19: tapping the eye with Skip On Seen enable
 
 Both handlers now save and restore it around the call, as `thetaLocalSeenMarkCurrent` always did. One missing hook produced both a dead-looking button and a privacy leak; the dead button is what got reported.
 
-## Home-feed reels dead (open 2026-09-06; narrowed 2026-09-14; does not reproduce on 447)
+## Home-feed reels dead (open 2026-09-06; narrowed 2026-09-14; still present on 447, measured 2026-09-15)
 
-> **2026-09-14, 447.0.0 — the symptom is gone, but this is an eyeball, not a measurement.** After upgrading nPhone to Instagram 447 with the normal Theta feature build (`artifacts/Instagram_447_theta.ipa`), home-feed reels play. No capture was taken, so there is no frames-per-queue number to set against the 442 baseline's `0 frames, max PTS 0.000` — the claim rests on one launch, watched. That is weak evidence for a fault whose 442 symptom was specifically launch-time ("dead at launch until I switch tabs"). **Do not close this section until a `--all` capture on 447 shows the queues being fed.** Everything below is the 442 evidence and stands on its own; if 447 holds up, the reading is that the defect was Instagram's and Meta fixed it — which is what the 442 evidence already pointed at, since the starvation sits above MediaToolbox and Theta's feed filter drops nothing.
+> **2026-09-15, 447.0.0 — measured, and the symptom is NOT gone.** The capture the previous note demanded was taken (`logs/theta-20260915-124528.log`, 219 MB, two launches, dylib present, one hook miss). It falsifies "reels play on 447": starvation is **76% of running samples on 447 against 41% on the 442 baseline** — worse, not fixed. One renderer created 4 s after cold launch runs at rate 1.00 for **150 seconds with zero frames**, is never finalized, and survives the tab switch that used to revive playback; the worst 442 equivalent ran 48 s. The watched-launch observation of 2026-09-14 was wrong, or saw a feed that happened to have no reel in view. **This section stays open, and the level-2 control is now the next run.**
+>
+> **Two corrections to how this was being measured.** The 442 baseline was recorded here as `0 frames, max PTS 0.000`; it is not. In that log 27 of 46 running samples are fed normally, totalling 3137 frames, and only 3 of 10 renderers are fully starved. So "frames are being enqueued" would have passed 442 as well and is not a test of anything. Nor is max PTS: it reads `nan` whenever a queue is actually being fed, so it can never rise. The discriminator that works is **fully-starved renderers (rate 1.00, zero frames, never torn down) and starvation as a share of running samples** — `scripts/reel-stats.sh <log>` computes both. Queue addresses are recycled within a capture, so per-address totals mix separate playback sessions and only the per-session runs are meaningful.
 
 Home-feed reels render as a static poster and do not expand or play on tap. **The Reels tab plays normally**, the feed scrolls, and photos load — so decoding, MediaToolbox and the CDN are all fine. This is home-feed-specific. Capture: `logs/theta-20260906-130323.log` (~200 MB, unfiltered).
 
@@ -396,6 +398,30 @@ The starved queues all read `sbuf queue contains 0 frames (0.000 sec), max PTS: 
 One behavioural difference from 2026-09-06, unexplained: taps now produce real downstream work. The tap at 15:52:33 creates an audio session, a `FigAudioSessionClock` and new video queues, where the three taps in the 13:08 capture produced nothing at all. Either the off-main-thread UIKit fix (64aa757) changed it or the older session was in a worse state — do not assume the 13:08 "taps do nothing" observation still holds.
 
 Also clean in this capture: `off the main thread is not allowed` = **0** (the 64aa757 fix holds), hook install misses = **1**, still `_didPressFollowButton`.
+
+### What the 2026-09-15 capture establishes (447.0.0)
+
+`logs/theta-20260915-124528.log` — `--all`, 219 MB, ~2m40s of app time, two cold launches, 150 `FigVideoQueueGMStats` samples. Summarised with `scripts/reel-stats.sh`:
+
+| | 442 baseline (`theta-20260914-155107.log`) | 447 (`theta-20260915-124528.log`) |
+|---|---|---|
+| Running samples (rate 1.00) | 46 | 59 |
+| Starved (0 frames while running) | 19 — 41% | 45 — **76%** |
+| Fed | 27 (3137 frames) | 14 (1719 frames) |
+| Fully starved renderers | 3 of 10 | 1 of 9 |
+| Longest unbroken starved run | 8 samples (~48 s) | **25 samples (~150 s)** |
+
+The single fully-starved renderer on 447 is the whole story: created `VR/DIB` at 12:45:48, four seconds after the Theta hooks install, timebase rate driven to 1.000, given one video target — and then zero frames every 6 seconds until the capture ends, with no `vq_Finalize`. It outlives the tab switch. That is the original launch-time symptom, unchanged and running longer than any 442 instance.
+
+Caveat on comparability: `--all` is a whole-device capture and `mediaplaybackd` is shared, so the queues are not provably all Instagram's. Both captures were taken with nothing else playing video, which is what makes them comparable; the percentages also move with how much the feed was scrolled, so **the fully-starved-renderer count and its run length are the load-bearing numbers, not the percentage.**
+
+**Three side results from the same capture.**
+
+- **`StorySkip` route is settled: `overlay _nextStoryButtonTapped` fires** — five times, cleanly, on 447. The guessed navigation-action enum (route 3) is not involved and the open question from the story thread is closed. `StorySeen: mark-current ok=1` also fires five times.
+- **The feed filter now drops items on 447, where on 442 it dropped nothing.** 442: `dropped=none` on 23 of 24 updates (the 24th a spinner). 447: 13 of 24 updates drop something — `IGHScrollAYMFModel` and `IGThreadsInFeedModels.IGThreadsInFeedModel`. Neither is a video cell, so this does not explain the starvation, but the "Theta's feed filter removes nothing" finding below is a 442 fact and no longer describes 447.
+- **A third 447 identifier regression, found at runtime rather than by `compat.py`:** `[Theta] miss: Class is nil for _didPressFollowButton`. One miss, reported by the hook-install-miss report at launch.
+
+Not answered by this capture: **Hide Tabs.** `Source/HideTabs.m` emits no `os_log` at all, so the capture cannot say whether the `_viewControllers` fallback path worked — that check needs a visual confirmation on device, not a log.
 
 ### The stock control is unusable — re-signed stock 442 cannot log in (falsified 2026-09-14)
 
