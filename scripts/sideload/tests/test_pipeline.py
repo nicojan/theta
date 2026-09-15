@@ -80,8 +80,12 @@ class ConflictingInstall(unittest.TestCase):
     BUNDLE = "com.burbn.instagram"
 
     def _run(self, installed_team, uninstall_conflicting):
+        return self._run_record({"teamIdentifier": installed_team},
+                                uninstall_conflicting)
+
+    def _run_record(self, record, uninstall_conflicting):
         target = make_device()
-        existing = {self.BUNDLE: {"teamIdentifier": installed_team}}
+        existing = {self.BUNDLE: record}
         options = pipeline.Options(ipa="x.ipa",
                                    uninstall_conflicting=uninstall_conflicting)
         with mock.patch.object(device_mod, "installed_apps", return_value=existing), \
@@ -103,6 +107,21 @@ class ConflictingInstall(unittest.TestCase):
 
     def test_same_team_is_replaced_in_place_without_uninstalling(self):
         removed = self._run("3CY4DX3K45", uninstall_conflicting=False)
+        removed.assert_not_called()
+
+    def test_an_unreported_team_is_replaced_rather_than_deleted(self):
+        # devicectl returns no teamIdentifier key at all for a developer-signed
+        # Instagram on iOS 27 -- this is the real record shape, minus the key the
+        # other fixtures invent. Unreadable was being treated as different, which
+        # demanded an uninstall and threw away the container (and the login).
+        record = {"bundleIdentifier": self.BUNDLE, "version": "442.0.0",
+                  "builtByDeveloper": True}
+        removed = self._run_record(record, uninstall_conflicting=False)
+        removed.assert_not_called()
+
+    def test_an_unreported_team_does_not_delete_even_with_the_flag(self):
+        record = {"bundleIdentifier": self.BUNDLE, "version": "442.0.0"}
+        removed = self._run_record(record, uninstall_conflicting=True)
         removed.assert_not_called()
 
     def test_uninstalling_is_off_by_default(self):

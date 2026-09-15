@@ -211,7 +211,16 @@ def _handle_conflicting_install(target, bundle_id, identity, options, say):
         say(f"Replacing existing install of {bundle_id}")
         return
 
-    say(f"{bundle_id} is already installed, signed by team {installed_team or 'unknown'}")
+    if not installed_team:
+        # devicectl does not report teamIdentifier for every install -- it reports none for
+        # a developer-signed Instagram on iOS 27. Unreadable is not the same as different,
+        # and treating it as different forced an uninstall that threw away the container
+        # (and the login) on every re-install. Let the install proceed: if the team really
+        # does differ, iOS rejects it with its own error and nothing has been lost.
+        say(f"{bundle_id} is installed but its team is not reported; attempting to replace it")
+        return
+
+    say(f"{bundle_id} is already installed, signed by team {installed_team}")
     if not options.uninstall_conflicting:
         raise SideloadError(
             f"{bundle_id} is installed under a different team",
