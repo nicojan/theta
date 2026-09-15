@@ -27,7 +27,7 @@ That creates `$THEOS/sdks/iPhoneOS14.5.sdk`. Do not unpack it inside the Theta r
 
 ## Install to a device
 
-`./sideload` re-signs a built IPA with your own certificate and installs it over USB, replacing Sideloadly. First run needs `./sideload bootstrap` to obtain a provisioning profile from Xcode. See [scripts/sideload/README.md](scripts/sideload/README.md).
+`./sideload` re-signs a built IPA with your own certificate and installs it over USB or Wi-Fi, replacing Sideloadly. First run needs `./sideload bootstrap` to obtain a provisioning profile from Xcode. See [scripts/sideload/README.md](scripts/sideload/README.md).
 
 ## Build
 

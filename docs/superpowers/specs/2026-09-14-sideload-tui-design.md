@@ -108,3 +108,17 @@ Two things in the plan above turned out to be wrong, both in the same direction.
 The consequence is that the one manual prerequisite in the original plan — generating an App Store Connect API key — is not needed at all.
 
 The entitlement analysis held exactly: the minted profile grants precisely the four keys the design predicted, and the re-signed control IPA drops nineteen.
+
+## Revised after the first device run (2026-09-14, evening)
+
+The design was never exercised against a device — the phone read `disconnected` throughout the session that built it, and `devicectl` install/uninstall/verify were unit-tested against captured JSON only. The first real run found three defects, all in code the tests had covered, and disproved one stated consequence.
+
+**A cold `tunnelState` is not an answer.** The design treated `tunnelState == "connected"` as the readiness test. `devicectl list devices` reports the tunnel state it last saw, and an idle phone drops its tunnel within a minute or two, so the tool refused a device that was fully reachable. Any real operation re-establishes it; `device.wake()` now does so before the readiness check is believed. The remedy text also insisted on USB at a device that had only ever been on the local network — wireless install works fine.
+
+**A flag that asks for confirmation is not a flag.** `--uninstall-conflicting` still called a `confirm()` callback that returned `False` off a TTY, so it cancelled the very run it was meant to enable. Passing it is now the consent, as the TUI switch already was, and the callback is gone rather than left unused. `Options.uninstall_conflicting` also defaults to `False`, so a programmatic caller that does not ask can never delete an app.
+
+**Not every directory ending in `.framework` is a bundle.** Theta's `ffmpeg.framework` is a bare container of nested `.framework` bundles with no Info.plist and no binary of its own. `signable_paths` tried to sign it and codesign aborted the run. Real bundles are signed; containers are descended into. A `SigningOrder` fixture had encoded the wrong behaviour by building bundles with no Info.plist — inputs that cannot exist on a device, which is exactly why the suite stayed green while a real IPA failed.
+
+**The entitlement consequence was understated.** The design predicted that dropping the keychain access group would reset the login session. It does — but for stock Instagram the session cannot be re-established at all: the app aborts on Direct's account-session sync, reproducibly, under two independent signers. The entitlement *analysis* held exactly; the prediction of what losing those entitlements would cost did not. See `NOTES-local.md` → "The stock control is unusable".
+
+The common thread: every one of these passed a test suite that never touched a device or a real IPA. The unit tests are still worth having, but they cannot stand in for one real install.
