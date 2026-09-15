@@ -47,9 +47,9 @@ Every failure carries a remedy. The common ones:
 
 | Symptom | Cause |
 |---|---|
-| `nPhone is disconnected` | A sleeping phone reports as disconnected even while plugged in. Unlock it. |
+| `nPhone is disconnected` | The tunnel is re-established automatically before this is reported, so the device is genuinely unreachable: wake and unlock it, and confirm it is paired. A sleeping phone reports as disconnected even while plugged in. |
 | `is not in the provisioning profile` | The device was registered after the profile was minted. Run `bootstrap` again. |
-| `installed under a different team` | iOS will not replace an app signed by another team. Pass `--uninstall-conflicting`. |
+| `installed under a different team` | iOS will not replace an app signed by another team. Pass `--uninstall-conflicting`, which is itself the confirmation -- the existing app and its data are deleted without a further prompt. |
 | `codesign failed` | Usually a stale extended attribute. `xattr -cr` the bundle. |
 
 Set `SIDELOAD_DEBUG=1` for the underlying tool output.

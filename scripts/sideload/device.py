@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from .errors import DeviceError
 from .run import redact, run
 
-# devicectl reports these; only `connected` can actually receive an install.
+# devicectl reports these. Only `connected` can receive an install, but a
+# `disconnected` reading is not an answer on its own -- see wake().
 CONNECTED = "connected"
+PAIRED = "paired"
 
 
 @dataclass
@@ -34,11 +36,16 @@ class Device:
 
     @property
     def is_ready(self):
-        return self.tunnel_state == CONNECTED and self.pairing_state == "paired"
+        return self.tunnel_state == CONNECTED and self.pairing_state == PAIRED
+
+    @property
+    def is_wakeable(self):
+        """Paired, so a dropped tunnel can be brought back up. See wake()."""
+        return self.pairing_state == PAIRED
 
     @property
     def status(self):
-        if self.pairing_state != "paired":
+        if self.pairing_state != PAIRED:
             return "not paired"
         if self.tunnel_state != CONNECTED:
             return self.tunnel_state or "disconnected"
@@ -139,6 +146,30 @@ def find_device(needle):
                           remedy=f"Known devices: {known}")
     raise DeviceError(f"{needle!r} is ambiguous",
                       remedy="Use the UDID instead of the name.")
+
+
+def wake(device, timeout=120):
+    """Bring the on-demand tunnel back up, and return the device re-read.
+
+    `list devices` reports the tunnel state devicectl last saw, and an idle
+    phone drops its tunnel within a minute or two -- so a cold read says
+    `disconnected` about a device that is reachable. Any real operation
+    re-establishes the tunnel; `device info details` is the cheapest one.
+    A device that is not paired cannot be woken, and is returned unchanged.
+    """
+    if not device.is_wakeable:
+        return device
+    try:
+        _devicectl(["device", "info", "details", "--device", device.udid],
+                   timeout=timeout)
+    except DeviceError:
+        # Leave the caller to report the original status; a failure to wake is
+        # not more informative than the state it was already in.
+        return device
+    for entry in list_devices():
+        if entry.udid == device.udid:
+            return entry
+    return device
 
 
 def installed_apps(device):

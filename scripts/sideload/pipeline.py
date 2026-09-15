@@ -24,7 +24,7 @@ class Options:
     display_name: str = ""
     remove_extensions: bool = True
     get_task_allow: bool = True
-    uninstall_conflicting: bool = True
+    uninstall_conflicting: bool = False
     launch: bool = False
     keep_unpacked: bool = False
     output_ipa: str = ""
@@ -42,14 +42,13 @@ class Result:
     output_ipa: str = ""
 
 
-def run(options, progress=None, confirm=None):
+def run(options, progress=None):
     """Sideload `options.ipa`. Returns a Result, raises SideloadError on failure.
 
-    `progress(message)` receives step narration. `confirm(question)` is asked
-    before anything destructive and must return True to proceed.
+    `progress(message)` receives step narration. Destructive steps are gated by
+    the options that request them, not by a callback -- see _handle_conflict.
     """
     say = progress or (lambda _message: None)
-    ask = confirm or (lambda _question: True)
     result = Result()
 
     target = None
@@ -105,7 +104,7 @@ def run(options, progress=None, confirm=None):
         if not options.install:
             return result
 
-        _handle_conflicting_install(target, plan.bundle_id, identity, options, say, ask)
+        _handle_conflicting_install(target, plan.bundle_id, identity, options, say)
 
         say("Installing")
         device_mod.install_app(target, app_path)
@@ -130,9 +129,12 @@ def _resolve_device(needle):
     if needle:
         target = device_mod.find_device(needle)
     else:
-        candidates = [d for d in device_mod.ios_devices() if d.is_ready]
+        known = device_mod.ios_devices()
+        # A paired device whose tunnel has idled down still counts -- it wakes
+        # on demand. Prefer one already up, so a warm phone beats a cold one.
+        candidates = ([d for d in known if d.is_ready]
+                      or [d for d in known if d.is_wakeable])
         if not candidates:
-            known = device_mod.ios_devices()
             detail = ", ".join(f"{d.name} ({d.status})" for d in known) or "none"
             raise DeviceError(
                 "No connected iOS device",
@@ -148,10 +150,14 @@ def _resolve_device(needle):
         target = candidates[0]
 
     if not target.is_ready:
+        target = device_mod.wake(target)
+
+    if not target.is_ready:
         raise DeviceError(
             f"{target.name} is {target.status}",
-            remedy="Reconnect over USB and unlock the device. A sleeping phone "
-                   "reports as disconnected even while plugged in.",
+            remedy="Connect and unlock the device, then retry. A sleeping phone "
+                   "reports as disconnected even while plugged in, and a locked "
+                   "one will not finish the install.",
         )
     return target
 
@@ -191,7 +197,7 @@ def _check_profile(prof, identity, target):
         )
 
 
-def _handle_conflicting_install(target, bundle_id, identity, options, say, ask):
+def _handle_conflicting_install(target, bundle_id, identity, options, say):
     """iOS refuses to replace an app signed by a different team."""
     try:
         existing = device_mod.installed_apps(target).get(bundle_id)
@@ -211,9 +217,10 @@ def _handle_conflicting_install(target, bundle_id, identity, options, say, ask):
             f"{bundle_id} is installed under a different team",
             remedy="Delete the app from the device, or pass --uninstall-conflicting.",
         )
-    if not ask(f"Uninstall the existing {bundle_id} (its data will be lost)?"):
-        raise SideloadError("Cancelled: the existing install blocks this one")
-    say("Uninstalling the conflicting build")
+    # No second confirmation: --uninstall-conflicting (and the TUI switch) is
+    # the consent. Asking again made the flag a no-op wherever stdin is not a
+    # TTY, which is every script that would want it.
+    say(f"Uninstalling the conflicting {bundle_id} -- its data will be lost")
     device_mod.uninstall_app(target, bundle_id)
 
 

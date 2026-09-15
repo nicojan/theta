@@ -81,6 +81,56 @@ class DeviceParsing(unittest.TestCase):
         self.assertIn("nPhone", caught.exception.remedy)
 
 
+class Waking(unittest.TestCase):
+    """A cold tunnel is a stale cache, not an absent device.
+
+    `list devices` reports the tunnel state devicectl last saw. An idle phone
+    drops its tunnel in a minute or two, so a cold read called a reachable
+    device `disconnected` and aborted the install before it started.
+    """
+
+    def _warm_fixture(self):
+        import copy
+        warm = copy.deepcopy(FIXTURE)
+        for entry in warm["result"]["devices"]:
+            if entry["deviceProperties"]["name"] == "nPad":
+                entry["connectionProperties"]["tunnelState"] = "connected"
+        return warm
+
+    def test_paired_device_is_wakeable_even_when_disconnected(self):
+        with fake_devicectl(FIXTURE):
+            pad = device_mod.find_device("nPad")
+        self.assertFalse(pad.is_ready)
+        self.assertTrue(pad.is_wakeable)
+
+    def test_wake_reestablishes_the_tunnel_and_rereads_the_device(self):
+        with fake_devicectl(FIXTURE):
+            pad = device_mod.find_device("nPad")
+        with mock.patch.object(device_mod, "_devicectl",
+                               return_value=self._warm_fixture()["result"]) as called:
+            woken = device_mod.wake(pad)
+        # The wake call itself, then the re-read.
+        self.assertEqual(called.call_args_list[0][0][0][:3],
+                         ["device", "info", "details"])
+        self.assertTrue(woken.is_ready)
+        self.assertEqual(woken.udid, pad.udid)
+
+    def test_wake_is_a_noop_for_an_unpaired_device(self):
+        unpaired = device_mod.Device(
+            name="x", udid="u", identifier="i", model="m", platform="iOS",
+            os_version="27.0", tunnel_state="disconnected", pairing_state="unpaired")
+        with mock.patch.object(device_mod, "_devicectl") as called:
+            self.assertIs(device_mod.wake(unpaired), unpaired)
+        called.assert_not_called()
+
+    def test_wake_returns_the_original_when_it_cannot_connect(self):
+        with fake_devicectl(FIXTURE):
+            pad = device_mod.find_device("nPad")
+        with mock.patch.object(device_mod, "_devicectl",
+                               side_effect=DeviceError("no route")):
+            self.assertIs(device_mod.wake(pad), pad)
+
+
 class InstalledApps(unittest.TestCase):
     def test_keys_apps_by_bundle_identifier(self):
         result = {"result": {"apps": [

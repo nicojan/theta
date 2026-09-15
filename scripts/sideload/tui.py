@@ -345,13 +345,12 @@ class SideloadApp(App):
     @work(thread=True, exclusive=True)
     def _run_pipeline(self, options):
         try:
+            # The uninstall switch is the user's pre-authorisation; the
+            # pipeline acts on it directly rather than interrupting a long
+            # run with a modal.
             result = pipeline.run(
                 options,
                 progress=lambda text: self.post_message(Narrate(text)),
-                # The switch is the answer: the user pre-authorises the
-                # uninstall rather than being interrupted by a modal
-                # part-way through a long run.
-                confirm=lambda _question: options.uninstall_conflicting,
             )
             self.post_message(Finished(result=result))
         except SideloadError as exc:

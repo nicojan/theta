@@ -17,13 +17,6 @@ def _say(message):
     print(message, flush=True)
 
 
-def _confirm(question):
-    if not sys.stdin.isatty():
-        return False
-    reply = input(f"{question} [y/N] ").strip().lower()
-    return reply in ("y", "yes")
-
-
 def find_ipas(root="."):
     """IPAs in the conventional build directories, newest first."""
     found = []
@@ -105,7 +98,7 @@ def cmd_install(args):
         output_ipa=args.output or "",
     )
 
-    result = pipeline.run(options, progress=_say, confirm=_confirm)
+    result = pipeline.run(options, progress=_say)
 
     _say("")
     _say(f"Installed {result.bundle_id} on {result.device_name}")
