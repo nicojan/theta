@@ -135,6 +135,23 @@ def plan(app_path, prof, display_name=None, remove_extensions=True, get_task_all
     )
 
 
+def _is_real_bundle(path):
+    """A directory named like a bundle is only signable if it actually is one.
+
+    Theta's ffmpeg.framework is a bare container holding nested .framework
+    bundles: no Info.plist and no binary of its own. codesign rejects it
+    outright, so it has to be walked into rather than signed.
+    """
+    stem = os.path.basename(path).rsplit(".", 1)[0]
+    candidates = (
+        os.path.join(path, "Info.plist"),
+        os.path.join(path, stem),
+        os.path.join(path, "Versions", "Current", "Info.plist"),
+        os.path.join(path, "Versions", "Current", "Resources", "Info.plist"),
+    )
+    return any(os.path.isfile(c) for c in candidates)
+
+
 def signable_paths(app_path):
     """Everything needing its own signature, deepest first.
 
@@ -145,12 +162,18 @@ def signable_paths(app_path):
     for root, dirs, files in os.walk(app_path):
         for name in list(dirs):
             if name.endswith(_SIGNABLE_BUNDLES):
-                targets.append(os.path.join(root, name))
+                bundle = os.path.join(root, name)
+                # A container that only looks like a bundle is descended into,
+                # never signed -- its real bundles are picked up below.
+                if _is_real_bundle(bundle):
+                    targets.append(bundle)
                 dirs.remove(name)
-                for sub_root, sub_dirs, sub_files in os.walk(os.path.join(root, name)):
+                for sub_root, sub_dirs, sub_files in os.walk(bundle):
                     for sub_name in list(sub_dirs):
                         if sub_name.endswith(_SIGNABLE_BUNDLES):
-                            targets.append(os.path.join(sub_root, sub_name))
+                            nested = os.path.join(sub_root, sub_name)
+                            if _is_real_bundle(nested):
+                                targets.append(nested)
                     for sub_name in sub_files:
                         if sub_name.endswith(".dylib"):
                             targets.append(os.path.join(sub_root, sub_name))

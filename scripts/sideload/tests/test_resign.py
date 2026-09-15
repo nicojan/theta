@@ -20,7 +20,11 @@ class SigningOrder(unittest.TestCase):
             "PlugIns/InstagramWidgetExtension.appex",
             "PlugIns/InstagramWidgetExtension.appex/Frameworks/Nested.framework",
         ):
-            os.makedirs(os.path.join(self.app, relative), exist_ok=True)
+            bundle = os.path.join(self.app, relative)
+            os.makedirs(bundle, exist_ok=True)
+            # Real bundles always carry an Info.plist. Without one codesign
+            # rejects them, so a fixture lacking it tests an impossible input.
+            open(os.path.join(bundle, "Info.plist"), "w").close()
         os.makedirs(os.path.join(self.app, "Frameworks"), exist_ok=True)
         open(os.path.join(self.app, "Frameworks", "Theta.dylib"), "w").close()
 
@@ -54,6 +58,47 @@ class SigningOrder(unittest.TestCase):
     def test_returns_no_duplicates(self):
         found = self._relative()
         self.assertEqual(len(found), len(set(found)))
+
+
+class FakeBundles(unittest.TestCase):
+    """Theta's ffmpeg.framework is a container, not a framework.
+
+    It ends in .framework but holds only nested .framework bundles -- no
+    Info.plist, no binary. Signing it aborted the whole run on codesign's
+    "bundle format unrecognized"; it must be descended into instead.
+    """
+
+    def _tree(self):
+        root = tempfile.mkdtemp()
+        app = os.path.join(root, "Instagram.app")
+        # A real framework, nested inside a container that only looks like one.
+        inner = os.path.join(app, "ffmpeg.framework", "libavfilter.framework")
+        os.makedirs(inner)
+        open(os.path.join(inner, "Info.plist"), "w").close()
+        open(os.path.join(inner, "libavfilter"), "w").close()
+        # A real, ordinary framework alongside it.
+        real = os.path.join(app, "Frameworks", "Real.framework")
+        os.makedirs(real)
+        open(os.path.join(real, "Info.plist"), "w").close()
+        self.addCleanup(shutil.rmtree, root, True)
+        return app
+
+    def test_container_is_skipped_but_its_frameworks_are_signed(self):
+        app = self._tree()
+        found = resign.signable_paths(app)
+        names = [os.path.relpath(p, app) for p in found]
+        self.assertNotIn("ffmpeg.framework", names)
+        self.assertIn(os.path.join("ffmpeg.framework", "libavfilter.framework"), names)
+        self.assertIn(os.path.join("Frameworks", "Real.framework"), names)
+
+    def test_a_framework_with_only_a_binary_still_counts(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        app = os.path.join(root, "Instagram.app")
+        fw = os.path.join(app, "Bare.framework")
+        os.makedirs(fw)
+        open(os.path.join(fw, "Bare"), "w").close()
+        self.assertIn(fw, resign.signable_paths(app))
 
 
 class ExtensionStripping(unittest.TestCase):
