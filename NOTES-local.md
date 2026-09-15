@@ -139,6 +139,19 @@ ls -d ffmpeg.framework ThetaResources.bundle          # → both embedded
 
 All passed. The `LC_LOAD_DYLIB` check is the one that matters — everything else can look right while the dylib is never loaded.
 
+## Instagram 447.0.0
+
+Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload is kept at `input/Payload_442/` and the 442 builds at `artifacts/Instagram_442_control2.ipa`, because the existing reel baseline (`logs/theta-20260914-155107.log`) is a 442 capture and nothing from 447 is comparable to it.
+
+`./scripts/compat.py` over 442 → 447 (45,428 → 50,014 classes; 384 of Theta's identifiers OK on both) finds exactly two that 442 had and 447 does not:
+
+| Symbol | Used at | Impact |
+| --- | --- | --- |
+| `configureWithAdItem:overlayViewStyle:ctaEnabled:delegate:surfaceType:analyticsModule:labelAlignment:` | `Source/Hooks/Behavior/HideAds.m:231` | One of several ad-overlay hooks, installed with `NullHookMessageIfPresent`, so it degrades silently rather than logging a miss. Explore-grid ad overlays only — **not** the home feed, and not the video path. |
+| `_viewControllers` (ivar) | `Source/Hooks/UI/HideTabs.m:131` | KVC read with three declared alternates on line 144 (`viewControllers`, `_tabViewControllers`, `tabViewControllers`). Verify Hide Tabs still hides a tab before assuming the fallback covers it. |
+
+Neither touches feed video, so neither can explain the reel bug, and neither affects a `--control=2` build, which installs no hooks at all.
+
 ## Instagram 442.0.0
 
 Built against **442.0.0** on 2026-08-15 (`com.burbn.instagram-442.0.0-Decrypted.ipa`). **No source changes were needed.**
@@ -397,7 +410,18 @@ Not proven: Instagram logs no assertion text, so the link from denial to abort i
 
 Logs: stock crashes `logs/theta-20260914-191906.log` and `logs/theta-20260914-194338.log`; the working Theta login `logs/theta-20260914-195214.log`.
 
-**Replacement control to build instead:** a Theta build with every feature toggled off, rather than a stock build. It isolates Theta's *features* instead of Theta's *presence*, which is the better-posed question anyway, and unlike stock it can actually log in. Reels still starving with everything off is the upstream verdict. Summarise with the same one-liner:
+**Replacement control, built 2026-09-14 (`THETA_CONTROL`, commit `38fb17b`):** a Theta build with its own features disabled, rather than a stock build. Unlike stock it can log in, because the sideload keychain/container shims are kept at every level. Two levels, because one of them is not a control on its own:
+
+| Level | What it does | What a clean capture proves |
+|---|---|---|
+| `./build.sh sideload --control=1` | `ThetaSettingEnabled()` always returns `NO` | The **toggles** are innocent. Nothing more — every hook is still installed. |
+| `./build.sh sideload --control=2` | level 1, plus `InitializeHooks()` installs nothing | The **dylib's hooking** is innocent. This is the real control. |
+
+Level 1 alone is a trap, and the reason is structural: not one `THRegister*Hooks()` call is gated on `ENABLED()` — every hook installs unconditionally and only consults its setting inside the hook body. So "every feature off" still leaves the entire swizzle set in place, and a clean level-1 result would exonerate the settings while saying nothing about Theta. Run level 2 first: starved at level 2 → the fault is upstream in Instagram and the investigation closes. Playing at level 2 → Theta is implicated, and level 1 then splits hook *presence* from hook *behaviour*.
+
+The build names itself in the capture: the launch banner reads `theta Jailed v1.0.0 control2`, and the IPA is written as `Instagram_control<level>.ipa`, so a log can never be attributed to the wrong build. The flag compiles to nothing when unset — confirmed by the hook-miss `os_log` string being absent from a level-2 dylib and present in a normal one. Level 2 also skips Theta's profile-image prefetch so the control adds no network traffic of its own.
+
+Summarise a capture with the same one-liner:
 
 ```sh
 grep -a "FigVideoQueueGMStats" logs/theta-<newest>.log | sed -E 's/.*\(0x([0-9a-f]+)\) ([0-9]+) frames.*/\1 \2/' | awk '{t[$1]+=$2; n[$1]++} END{for(q in t) print q, "samples="n[q], "frames="t[q]}'
