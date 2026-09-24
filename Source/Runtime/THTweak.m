@@ -13,7 +13,11 @@ static void InitializeHooks(void) {
     // leaves the whole swizzle set in place — a clean level-1 capture would exonerate the
     // toggles, not the dylib. Level 2 is the build that puts the dylib's hooking itself on
     // trial while keeping the sideload keychain/container shims that make login possible.
-    os_log(OS_LOG_DEFAULT, "[Theta] CONTROL BUILD level 2: no feature hooks installed");
+    // The TestFlight nag is the one exception: a re-signed build reads as Instagram Beta and the
+    // server's update nudge blocks the whole UI, so without it the control cannot reach the feed.
+    // It only dismisses that one view controller, the same class of shim as the keychain ones.
+    THRegisterHideTestFlightNagHooks();
+    os_log(OS_LOG_DEFAULT, "[Theta] CONTROL BUILD level 2: no feature hooks installed (TestFlight nag shim only)");
     return;
 #else
     THRegisterStoryAutoAdvanceHooks();
