@@ -148,6 +148,14 @@ ls -d ffmpeg.framework ThetaResources.bundle          # → both embedded
 
 All passed. The `LC_LOAD_DYLIB` check is the one that matters — everything else can look right while the dylib is never loaded.
 
+## Instagram 448.0.0
+
+Moved to **448.0.0** on 2026-09-24 (`com.burbn.instagram_448.0.0_und3fined.ipa`, `cryptid 0`). The 447 payload is kept at `input/Payload_447/` for the next `compat.py` diff; the last 447 feature build is `artifacts/Instagram_447_theta_left.ipa`.
+
+`./scripts/compat.py` 447 → 448 (50,014 → 50,443 classes; 397 identifiers OK on both) finds one break: `IGDirectMessageCell configureWithViewModel:ringViewSpecFactory:launcherSet:` became `…:mobileConfig:` (same class, same arity; the Keep Deleted Messages hook only passes the argument through). `KeepDeletedMessages.m` now hooks whichever the running version has, so `compat.py` keeps listing the old name as "broke" — that is the 447 fallback, not a regression.
+
+First launch on device (`logs/theta-20260924-201735.log`): logged in and the feed loaded, in-place install kept login and settings. The hook-miss report lists only `_didPressFollowButton`, already dead on 447. Story overlay builds on the left (`btnX=8`), and 19 eye taps gave 19 `mark-current ok=1` and 19 `StorySkip: advanced via overlay _nextStoryButtonTapped`. **Not proven by the log:** that the DM-cell hook installed and works. `NullHookMessageIfPresent` misses are silent and `KeepDeletedMessages.m` logs nothing, so the only evidence is that 448 has the selector and DMs opened without a crash. Test it by having a message unsent.
+
 ## Instagram 447.0.0
 
 Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload is kept at `input/Payload_442/` and the 442 builds at `artifacts/Instagram_442_control2.ipa`, because the existing reel baseline (`logs/theta-20260914-155107.log`) is a 442 capture and nothing from 447 is comparable to it.

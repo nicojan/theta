@@ -473,8 +473,13 @@ void THRegisterKeepDeletedMessagesHooks(void) {
 		@"_TtC19IGDirectMessageCell19IGDirectMessageCell",
 		@"IGDirectMessageCell"
 	]);
+	// 448 renamed the last argument launcherSet: -> mobileConfig:; the hook only passes it through.
+	SEL configure = @selector(configureWithViewModel:ringViewSpecFactory:mobileConfig:);
+	if (![messageCell instancesRespondToSelector:configure]) {
+		configure = @selector(configureWithViewModel:ringViewSpecFactory:launcherSet:);
+	}
 	NullHookMessageIfPresent(messageCell,
-		@selector(configureWithViewModel:ringViewSpecFactory:launcherSet:),
+		configure,
 		(void *)hook_directMessageCell_configure,
 		&orig_directMessageCell_configure);
 }
