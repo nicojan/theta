@@ -120,6 +120,32 @@ class ExtensionStripping(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.app, "Frameworks")))
         self.assertEqual(len(removed), 3)
 
+    def test_prunes_removed_bundles_from_the_sinf_manifest(self):
+        # installd replicates sinfs to every listed path on an upgrade, and aborts with
+        # "Info.plist missing at …/PlugIns/X.appex" when the bundle there is gone.
+        os.makedirs(os.path.join(self.app, "SC_Info"))
+        manifest = os.path.join(self.app, "SC_Info", "Manifest.plist")
+        with open(manifest, "wb") as fh:
+            plistlib.dump({
+                "SinfPaths": ["SC_Info/Instagram.sinf"],
+                "SinfReplicationPaths": [
+                    "Frameworks/A.framework/SC_Info/A.sinf",
+                    "PlugIns/InstagramWidgetExtension.appex/SC_Info/InstagramWidgetExtension.sinf",
+                    "Watch/Watch.app/SC_Info/Watch.sinf",
+                    "SC_Info/Instagram.sinf",
+                ],
+            }, fh)
+        resign.strip_extensions(self.app)
+        with open(manifest, "rb") as fh:
+            pruned = plistlib.load(fh)
+        self.assertEqual(pruned["SinfPaths"], ["SC_Info/Instagram.sinf"])
+        self.assertEqual(pruned["SinfReplicationPaths"],
+                         ["Frameworks/A.framework/SC_Info/A.sinf", "SC_Info/Instagram.sinf"])
+
+    def test_no_manifest_is_fine(self):
+        resign.strip_extensions(self.app)
+        self.assertFalse(os.path.exists(os.path.join(self.app, "SC_Info")))
+
 
 class StaleSignatures(unittest.TestCase):
     def test_removes_every_inherited_code_signature(self):

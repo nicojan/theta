@@ -99,7 +99,30 @@ def strip_extensions(app_path):
         for entry in sorted(os.listdir(target)):
             removed.append(f"{subdir}/{entry}")
         shutil.rmtree(target)
+    _prune_sinf_manifest(app_path, removed)
     return removed
+
+
+def _prune_sinf_manifest(app_path, removed):
+    """Drop sinf entries that point into bundles strip_extensions deleted.
+
+    installd copies a sinf to every path the manifest lists when it upgrades an
+    installed app, and a path into a missing bundle fails the whole install with
+    "Info.plist missing at …/PlugIns/X.appex". A fresh install does not check,
+    which is why only upgrades broke.
+    """
+    manifest = os.path.join(app_path, "SC_Info", "Manifest.plist")
+    if not removed or not os.path.isfile(manifest):
+        return
+    with open(manifest, "rb") as fh:
+        original = plistlib.load(fh)
+    prefixes = tuple(f"{path}/" for path in removed)
+    pruned = {
+        key: [p for p in value if not p.startswith(prefixes)] if isinstance(value, list) else value
+        for key, value in original.items()
+    }
+    with open(manifest, "wb") as fh:
+        plistlib.dump(pruned, fh)
 
 
 def plan(app_path, prof, display_name=None, remove_extensions=True, get_task_allow=True):
