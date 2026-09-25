@@ -1419,12 +1419,16 @@ static void setupButtons(IGStoryFullscreenCell *self) {
                             (unsigned long)buttonStack.count, downloadVideos, hideSeenState,
                             showLocalSeenOnly, showMentions, (long)itemCount]);
 
+    // Pinned to the left edge on purpose. On 447 the stack was pinned trailing but a capture
+    // showed every frame resolved to x=8 in an LTR, untransformed, full-width cell with no
+    // constraint conflict — something outside Auto Layout places it there, and the stack flipped
+    // back right whenever the constraints won. Nico prefers the left, so both now agree.
     UIButton *previousButton = nil;
     for (UIButton *button in buttonStack) {
         ThetaSetCaptureHiding(button);
         [self addSubview:button];
         [NSLayoutConstraint activateConstraints:@[
-            [button.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
+            [button.leftAnchor constraintEqualToAnchor:self.leftAnchor constant:8],
             [button.widthAnchor constraintEqualToConstant:30],
             [button.heightAnchor constraintEqualToConstant:30]
         ]];
@@ -1454,6 +1458,27 @@ static void setupButtons(IGStoryFullscreenCell *self) {
             ? NSStringFromClass([siblings[topThetaIndex + 1] class]) : @"(none)";
         theta_storyOverlayDiag(@"z-order", [NSString stringWithFormat:@"topThetaIndex=%lu of %lu, above=%@",
                                             (unsigned long)topThetaIndex, (unsigned long)siblings.count, above]);
+
+        // The stack is pinned left; record where it actually lands once layout has run, so a
+        // capture shows if something moves it again (RIGHT is the anomaly now).
+        __weak IGStoryFullscreenCell *weakGeoCell = self;
+        __weak UIButton *weakFirst = buttonStack.firstObject;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            IGStoryFullscreenCell *cell = weakGeoCell;
+            UIButton *first = weakFirst;
+            if (!cell || !first) return;
+            CGRect f = first.frame;
+            CGRect b = cell.bounds;
+            BOOL right = CGRectGetMidX(f) > CGRectGetMidX(b);
+            CGRect inWindow = cell.window ? [first convertRect:first.bounds toView:nil] : CGRectNull;
+            theta_storyOverlayDiag(right ? @"geometry RIGHT" : @"geometry ok",
+                                   [NSString stringWithFormat:@"btnX=%.0f cellW=%.0f winX=%.0f rtl=%d semantic=%ld superRtl=%d transform=%@ window=%d",
+                                    f.origin.x, b.size.width, CGRectIsNull(inWindow) ? -1.0 : inWindow.origin.x,
+                                    cell.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft,
+                                    (long)cell.semanticContentAttribute,
+                                    cell.superview.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft,
+                                    NSStringFromCGAffineTransform(cell.transform), cell.window != nil]);
+        });
     }
 
     __weak IGStoryFullscreenCell *weakSelf = self;
