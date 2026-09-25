@@ -6,20 +6,26 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 
 ## Status
 
-`./build.sh sideload` works. Current `output/Instagram_patched.ipa` (296 MB) is built against Instagram **447.0.0** (2026-09-14), injection verified (see [Verification](#verification)). `build.sh` wipes `output/` on each run, so only the most recent IPA survives — anything worth keeping goes to `artifacts/`, which currently holds:
+`./build.sh sideload` works (export `THEOS=/Users/nicojan/theos` first). The phone runs Instagram **448.0.0** with Theta since 2026-09-24 (`artifacts/Instagram_448_theta.ipa`), see [Instagram 448.0.0](#instagram-44800). `build.sh` wipes `output/` on each run, so anything worth keeping goes to `artifacts/` (gitignored), which currently holds:
 
 | File | What it is |
 | --- | --- |
-| `Instagram_447_theta.ipa` | 447 feature build, installed on nPhone 2026-09-14 |
-| `Instagram_447_control2.ipa` | 447 control, `--control=2` (no hooks installed) |
+| `Instagram_448_theta.ipa` | **current** 448 feature build, installed on nPhone 2026-09-24 |
+| `Instagram_447_theta_left.ipa` | last 447 feature build (story row pinned left) |
+| `Instagram_447_theta_geo.ipa` | 447 with the geometry diagnostic, before the left pin |
+| `Instagram_447_control2b.ipa` | 447 level-2 control with the TestFlight-nag shim, the build that gave the reel verdict |
+| `Instagram_447_control2.ipa` | superseded: stuck on the "update Instagram Beta" wall |
+| `Instagram_447_theta.ipa` | 447 feature build of 2026-09-14 |
 | `Instagram_442_control2.ipa` | 442 control, for comparison against the 442 baseline capture |
-| `Instagram_stock442_control.ipa` | dead end — re-signed stock 442 cannot log in, do not re-run |
+| `Instagram_stock442_control.ipa` | dead end: re-signed stock 442 cannot log in, do not re-run |
 
-The 442 payload is preserved at `input/Payload_442/` so `compat.py` has an old bundle to diff against on the next bump.
+Old payloads for `compat.py`: `input/Payload_447/` (previous) and `input/Payload_442/`. `input/Payload/` is 448.
 
-Runtime status: installed and run on device (iPhone 16 Pro Max). **Every on-device confirmation below was made on iOS 26.6; the phone now runs iOS 27.0** (`./sideload devices`, 2026-09-14) — none of them has been re-checked on 27. Theta loads and hooks install cleanly on 442. Fixed **and confirmed on device**: the repost freeze (see [Repost freeze](#repost-freeze-infinite-layout-loop-in-toastdismiss)), the story overlay (see [Story overlay](#story-overlay-buttons-vanished-on-442)), the story-download crash and the **whole VP9 → FFmpeg transcode path** including the `@loader_path` rewrite (see [Story video download](#story-video-download-vp9-source-three-separate-faults)), photo *and* video story saves, and both manual mark-as-seen **and Skip On Seen** (see [Story seen state](#story-seen-state-mark-and-skip-on-442)). H.264 (`avc1`) story video saves successfully.
+Installs go on **in place** again as of `0e22302` (the sinf-manifest fix, see [App extensions](#app-extensions-are-stripped-at-install)), so login and Theta settings survive a rebuild. Settings were reset twice on 2026-09-24 by the uninstalls needed before that fix; Nico re-enabled the story buttons, and other toggles may still be at their defaults (off: no defaults are registered).
 
-**Unverified in the current IPA** (dylib `9BF6CA69`, built 2026-09-14 against 447 — every item below was last checked on 442, so all of them are now also unverified on 447): the `ENABLED()` value cache, the download-button repositioning, the Messages-tab long-press, and the `prepareForReuse` hook meant to stop the overlay going missing on a recycled cell. Also untested: the eye button's long-press menu. **Confirmed on 447 by the 2026-09-15 capture:** `Skip On Seen` advances via `overlay _nextStoryButtonTapped` (the three-route question is closed), manual mark-as-seen fires, and the story overlay builds — see [Story seen state](#story-seen-state-mark-and-skip-on-442). [Testing the current IPA](#testing-the-current-ipa) is the checklist; `.claude/HANDOFF.md` carries the same list with the next action.
+Runtime status on 448 / iOS 27.0, confirmed 2026-09-24: login, feed, story overlay (pinned left), manual mark-as-seen, Skip On Seen, and the eye's long-press menu (last on 447). Home-feed reels are starved, and the level-2 control says that is not Theta's feature code, see [Home-feed reels](#home-feed-reels-dead-open-2026-09-06-narrowed-2026-09-14-still-present-on-447-measured-2026-09-15-level-2-control-starved-too-2026-09-24). Earlier fixes (repost freeze, story download and the VP9 → FFmpeg path, photo and video story saves) were confirmed on 442 and iOS 26.6 and have not been re-checked since.
+
+**Unverified on 448:** Keep Deleted Messages on the renamed DM-cell selector (it logs nothing; test by having a message unsent); Hide Tabs (no `os_log`, needs eyes); `_didPressFollowButton` is dead since 447 and still unaddressed; the `ENABLED()` value cache, download-button repositioning, Messages-tab long-press and `HideAds.m:231` have not been checked since 442. `.claude/HANDOFF.md` carries the next action.
 
 dSYMs are kept in `symbols/` (gitignored), named by dylib UUID. `.theos` is overwritten on every build, so a shipped IPA is undiagnosable without its copy there.
 
@@ -539,6 +545,10 @@ Note when re-measuring: the numbers above came from an **unfiltered** capture. `
 Requires `brew install libimobiledevice` (installed on this machine 2026-08-15) and the iPhone connected **over USB and unlocked**. Network pairing is not enough — `idevicesyslog -n` fails with `Could not connect to lockdownd: -8` even when `idevice_id -n` lists the device.
 
 **Stopping a capture that was started in the background** (an agent session, `nohup`, `&`): send **TERM**, not INT — `kill -TERM <wrapper pid>`. A script launched with `&` inherits SIGINT as ignored and bash cannot trap a signal ignored on entry, so `kill -INT` on the wrapper is silently a no-op: the script looks stopped while `idevicesyslog` keeps writing. **A log that is still growing reads as a complete capture** — this cost a wrong starvation number on 2026-09-15, measured from a file holding 72 of its eventual 150 stat lines. Interactive Ctrl-C was never affected; the terminal signals the whole process group. The script now reaps the child from its trap either way (`$OUT.pid`), so a clean `--- summary ---` block is the signal that the capture really stopped.
+
+**TERM is still not enough (seen 2026-09-24, unfixed).** Four times the wrapper outlived `kill -TERM` — reparented to pid 1 and still alive seconds later — and needed `-KILL`. `idevicesyslog` itself did exit. Until the trap is fixed, stop with `pkill -TERM -f "theta-log.sh --all"`, wait a few seconds, then `pkill -KILL` the wrapper and `idevicesyslog`, and confirm with `pgrep`.
+
+**Confirm the app is in the stream before the repro starts.** On 2026-09-24 a 12-minute control run produced a 651 MB capture with no Instagram process lines at all: the stream had ended (`[disconnected:…]`) before Nico launched, and nothing flagged it. Now the drill is: ask for a launch, `grep` the live file for the `Hello!` / build banner, and only then start the routine. Keep the phone unlocked with auto-lock off. A whole-device capture also contains queues from before the cold launch, so cut the log at the launch line before running `reel-stats.sh`.
 
 Two dead ends, so they are not retried: `log stream --device` was **removed in macOS 26** (the flag is unrecognised), and `xcrun devicectl` has no console/syslog subcommand. Console.app remains the zero-install fallback and the script prints those steps when it cannot find a device.
 
