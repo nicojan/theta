@@ -12,12 +12,8 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 | --- | --- |
 | `Instagram_448_theta.ipa` | **current** 448 feature build, installed on nPhone 2026-09-24 |
 | `Instagram_447_theta_left.ipa` | last 447 feature build (story row pinned left) |
-| `Instagram_447_theta_geo.ipa` | 447 with the geometry diagnostic, before the left pin |
 | `Instagram_447_control2b.ipa` | 447 level-2 control with the TestFlight-nag shim, the build that gave the reel verdict |
-| `Instagram_447_control2.ipa` | superseded: stuck on the "update Instagram Beta" wall |
-| `Instagram_447_theta.ipa` | 447 feature build of 2026-09-14 |
 | `Instagram_442_control2.ipa` | 442 control, for comparison against the 442 baseline capture |
-| `Instagram_stock442_control.ipa` | dead end: re-signed stock 442 cannot log in, do not re-run |
 
 Old payloads for `compat.py`: `input/Payload_447/` (previous) and `input/Payload_442/`. `input/Payload/` is 448.
 
@@ -160,11 +156,11 @@ Moved to **448.0.0** on 2026-09-24 (`com.burbn.instagram_448.0.0_und3fined.ipa`,
 
 `./scripts/compat.py` 447 → 448 (50,014 → 50,443 classes; 397 identifiers OK on both) finds one break: `IGDirectMessageCell configureWithViewModel:ringViewSpecFactory:launcherSet:` became `…:mobileConfig:` (same class, same arity; the Keep Deleted Messages hook only passes the argument through). `KeepDeletedMessages.m` now hooks whichever the running version has, so `compat.py` keeps listing the old name as "broke" — that is the 447 fallback, not a regression.
 
-First launch on device (`logs/theta-20260924-201735.log`): logged in and the feed loaded, in-place install kept login and settings. The hook-miss report lists only `_didPressFollowButton`, already dead on 447. Story overlay builds on the left (`btnX=8`), and 19 eye taps gave 19 `mark-current ok=1` and 19 `StorySkip: advanced via overlay _nextStoryButtonTapped`. **Not proven by the log:** that the DM-cell hook installed and works. `NullHookMessageIfPresent` misses are silent and `KeepDeletedMessages.m` logs nothing, so the only evidence is that 448 has the selector and DMs opened without a crash. Test it by having a message unsent.
+First launch on device (`logs/theta-20260924-201735.log.zst`): logged in and the feed loaded, in-place install kept login and settings. The hook-miss report lists only `_didPressFollowButton`, already dead on 447. Story overlay builds on the left (`btnX=8`), and 19 eye taps gave 19 `mark-current ok=1` and 19 `StorySkip: advanced via overlay _nextStoryButtonTapped`. **Not proven by the log:** that the DM-cell hook installed and works. `NullHookMessageIfPresent` misses are silent and `KeepDeletedMessages.m` logs nothing, so the only evidence is that 448 has the selector and DMs opened without a crash. Test it by having a message unsent.
 
 ## Instagram 447.0.0
 
-Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload is kept at `input/Payload_442/` and the 442 builds at `artifacts/Instagram_442_control2.ipa`, because the existing reel baseline (`logs/theta-20260914-155107.log`) is a 442 capture and nothing from 447 is comparable to it.
+Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload is kept at `input/Payload_442/` and the 442 builds at `artifacts/Instagram_442_control2.ipa`, because the existing reel baseline (`logs/theta-20260914-155107.log.zst`) is a 442 capture and nothing from 447 is comparable to it.
 
 `./scripts/compat.py` over 442 → 447 (45,428 → 50,014 classes; 384 of Theta's identifiers OK on both) finds exactly two that 442 had and 447 does not:
 
@@ -360,19 +356,19 @@ Both handlers now save and restore it around the call, as `thetaLocalSeenMarkCur
 
 ## Story button row: pinned left on purpose (2026-09-24, 447)
 
-Nico saw the row sometimes on the left edge instead of the right, and sometimes missing on the first story after launch. A post-layout geometry log (`StoryOverlay: geometry …`) showed every build landing at `btnX=8` in a 440-wide cell — LTR, identity transform, in a window, and no Auto Layout conflict — even though the stack was constrained trailing. So the left placement came from something outside the constraints (most likely Instagram's own layout setting the frame), and the stack flipped right whenever the constraints won. RTL and a narrow cell were both ruled out by that capture. Nico prefers the left, so the stack is now pinned `leftAnchor + 8`; both mechanisms agree and it stayed left on every story in `logs/theta-20260924-195608.log`. The geometry log stays in and now reports `geometry RIGHT` as the anomaly. The missing-on-first-story symptom did not reproduce in two cold launches (the overlay built on the first story both times); if it returns, the `StoryOverlay: no viewModel` / `no owner` / `buttons=0` lines will say which link broke. Also closed: the eye long-press fires and presents its menu (`StorySeen: long-press fired, presenting menu`).
+Nico saw the row sometimes on the left edge instead of the right, and sometimes missing on the first story after launch. A post-layout geometry log (`StoryOverlay: geometry …`) showed every build landing at `btnX=8` in a 440-wide cell — LTR, identity transform, in a window, and no Auto Layout conflict — even though the stack was constrained trailing. So the left placement came from something outside the constraints (most likely Instagram's own layout setting the frame), and the stack flipped right whenever the constraints won. RTL and a narrow cell were both ruled out by that capture. Nico prefers the left, so the stack is now pinned `leftAnchor + 8`; both mechanisms agree and it stayed left on every story in `logs/theta-20260924-195608.log.zst`. The geometry log stays in and now reports `geometry RIGHT` as the anomaly. The missing-on-first-story symptom did not reproduce in two cold launches (the overlay built on the first story both times); if it returns, the `StoryOverlay: no viewModel` / `no owner` / `buttons=0` lines will say which link broke. Also closed: the eye long-press fires and presents its menu (`StorySeen: long-press fired, presenting menu`).
 
 ## Home-feed reels dead (open 2026-09-06; narrowed 2026-09-14; still present on 447, measured 2026-09-15; level-2 control starved too, 2026-09-24)
 
-> **2026-09-24 — the level-2 control is starved too, so Theta's feature hooks are not the cause.** `logs/theta-20260924-150301.log`, cut at the control2b cold launch (15:09:14, `[Theta] CONTROL BUILD level 2: no feature hooks installed (TestFlight nag shim only)`): 96 running samples, 70 starved (73%), two fully-starved renderers. One created 10 s after launch runs **204 s** at rate 1.00 with zero frames; another runs 168 s. The 447 feature build's longest was 144 s. Same symptom, no feature hooks installed, so it lies upstream of Theta's hooking. **What this does not clear:** the control still has the dylib injected, the sideload keychain/container shims, the TestFlight-nag shim and a re-signed bundle, and a clean stock control is impossible (see below). The honest verdict is "not Theta's feature code". If the reel bug is still worth chasing, the remaining suspect is the re-signed sideload environment itself, and the only way to test that is a build that injects nothing at all but can still log in, which is not currently possible.
+> **2026-09-24 — the level-2 control is starved too, so Theta's feature hooks are not the cause.** `logs/theta-20260924-150301.log.zst`, cut at the control2b cold launch (15:09:14, `[Theta] CONTROL BUILD level 2: no feature hooks installed (TestFlight nag shim only)`): 96 running samples, 70 starved (73%), two fully-starved renderers. One created 10 s after launch runs **204 s** at rate 1.00 with zero frames; another runs 168 s. The 447 feature build's longest was 144 s. Same symptom, no feature hooks installed, so it lies upstream of Theta's hooking. **What this does not clear:** the control still has the dylib injected, the sideload keychain/container shims, the TestFlight-nag shim and a re-signed bundle, and a clean stock control is impossible (see below). The honest verdict is "not Theta's feature code". If the reel bug is still worth chasing, the remaining suspect is the re-signed sideload environment itself, and the only way to test that is a build that injects nothing at all but can still log in, which is not currently possible.
 >
 > Two things changed in the control to get this run. Plain control2 hit Instagram's `TestFlightUpdateNudgeViewController` ("It's time to update Instagram Beta") and could not reach the feed, because level 2 returned before registering `THRegisterHideTestFlightNagHooks()`. Level 2 now keeps that one shim (`artifacts/Instagram_447_control2b.ipa`). And every in-place install failed with `MIInstallerErrorDomain 35`, `Info.plist missing at …/PlugIns/InstagramNotificationExtension.appex` — a `./sideload` bug, not a damaged device install; see "App extensions are stripped at install".
 
-> **2026-09-15, 447.0.0 — measured, and the symptom is NOT gone.** The capture the previous note demanded was taken (`logs/theta-20260915-124528.log`, 219 MB, two launches, dylib present, one hook miss). It falsifies "reels play on 447": starvation is **76% of running samples on 447 against 41% on the 442 baseline** — worse, not fixed. One renderer created 4 s after cold launch runs at rate 1.00 for **150 seconds with zero frames**, is never finalized, and survives the tab switch that used to revive playback; the worst 442 equivalent ran 48 s. The watched-launch observation of 2026-09-14 was wrong, or saw a feed that happened to have no reel in view. **This section stays open, and the level-2 control is now the next run.**
+> **2026-09-15, 447.0.0 — measured, and the symptom is NOT gone.** The capture the previous note demanded was taken (`logs/theta-20260915-124528.log.zst`, 219 MB, two launches, dylib present, one hook miss). It falsifies "reels play on 447": starvation is **76% of running samples on 447 against 41% on the 442 baseline** — worse, not fixed. One renderer created 4 s after cold launch runs at rate 1.00 for **150 seconds with zero frames**, is never finalized, and survives the tab switch that used to revive playback; the worst 442 equivalent ran 48 s. The watched-launch observation of 2026-09-14 was wrong, or saw a feed that happened to have no reel in view. **This section stays open, and the level-2 control is now the next run.**
 >
 > **Two corrections to how this was being measured.** The 442 baseline was recorded here as `0 frames, max PTS 0.000`; it is not. In that log 27 of 46 running samples are fed normally, totalling 3137 frames, and only 3 of 10 renderers are fully starved. So "frames are being enqueued" would have passed 442 as well and is not a test of anything. Nor is max PTS: it reads `nan` whenever a queue is actually being fed, so it can never rise. The discriminator that works is **fully-starved renderers (rate 1.00, zero frames, never torn down) and starvation as a share of running samples** — `scripts/reel-stats.sh <log>` computes both. Queue addresses are recycled within a capture, so per-address totals mix separate playback sessions and only the per-session runs are meaningful.
 
-Home-feed reels render as a static poster and do not expand or play on tap. **The Reels tab plays normally**, the feed scrolls, and photos load — so decoding, MediaToolbox and the CDN are all fine. This is home-feed-specific. Capture: `logs/theta-20260906-130323.log` (~200 MB, unfiltered).
+Home-feed reels render as a static poster and do not expand or play on tap. **The Reels tab plays normally**, the feed scrolls, and photos load — so decoding, MediaToolbox and the CDN are all fine. This is home-feed-specific. Capture: `logs/theta-20260906-130323.log.zst` (~200 MB, unfiltered).
 
 ### What the log establishes
 
@@ -397,7 +393,7 @@ Instagram opened its last network connection at 13:04:11.66 and cancelled it at 
 
 `hook_hideAds` (`HideAds.m:58`) was the candidate: bound to `IGMainFeedListAdapterDataSource objectsForListAdapter:` and ending in `return ThetaApplyHideFeedFiltering(result ?: @[], YES);` **unconditionally**, with no toggle gate, which explained why turning settings off changed nothing. The `FeedFilter` / `MainFeed` logging added in 3b0f5f1 measured it, and it is **not** the cause.
 
-Capture `logs/theta-20260914-155107.log` (503 MB, unfiltered, 4m17s, covers a launch at 15:51:38, PID 2507, dylib `BB6958FC` confirmed by the presence of `MainFeed:` lines at all). Across **24 home-feed updates the object count never once shrank** — 1 → 4 → 6 → 10 → 15 → 21 → 27 — and every line reads `dropped=none`. The single exception is `dropped=IGSpinnerLabelViewModel` on the second update, which is the intended spinner-strip removal.
+Capture `logs/theta-20260914-155107.log.zst` (503 MB, unfiltered, 4m17s, covers a launch at 15:51:38, PID 2507, dylib `BB6958FC` confirmed by the presence of `MainFeed:` lines at all). Across **24 home-feed updates the object count never once shrank** — 1 → 4 → 6 → 10 → 15 → 21 → 27 — and every line reads `dropped=none`. The single exception is `dropped=IGSpinnerLabelViewModel` on the second update, which is the intended spinner-strip removal.
 
 So Theta removes no home-feed items, the ungated call is harmless in effect, and "the reel I was watching disappeared" is **not** Theta deleting it. The path is still ungated and still worth gating on principle, but that is tidiness, not this bug.
 
@@ -423,7 +419,7 @@ Also clean in this capture: `off the main thread is not allowed` = **0** (the 64
 
 ### What the 2026-09-15 capture establishes (447.0.0)
 
-`logs/theta-20260915-124528.log` — `--all`, 219 MB, ~2m40s of app time, two cold launches, 150 `FigVideoQueueGMStats` samples. Summarised with `scripts/reel-stats.sh`:
+`logs/theta-20260915-124528.log.zst` — `--all`, 219 MB, ~2m40s of app time, two cold launches, 150 `FigVideoQueueGMStats` samples. Summarised with `scripts/reel-stats.sh`:
 
 | | 442 baseline (`theta-20260914-155107.log`) | 447 (`theta-20260915-124528.log`) |
 |---|---|---|
@@ -467,7 +463,7 @@ Mechanism, by correlation rather than proof: a re-signed build cannot reach Meta
 
 Not proven: Instagram logs no assertion text, so the link from denial to abort is strong correlation across four runs, not a demonstrated cause. Proving it needs a debugger attached at the abort (`get-task-allow` is already set). Rejected as a fix: granting the missing groups — app-group and keychain-group identifiers are globally unique and belong to Meta, so they cannot be registered to team `3CY4DX3K45`.
 
-Logs: stock crashes `logs/theta-20260914-191906.log` and `logs/theta-20260914-194338.log`; the working Theta login `logs/theta-20260914-195214.log`.
+Logs: stock crashes `logs/theta-20260914-191906.log.zst` and `logs/theta-20260914-194338.log.zst`; the working Theta login `logs/theta-20260914-195214.log.zst`.
 
 **Replacement control, built 2026-09-14 (`THETA_CONTROL`, commit `38fb17b`):** a Theta build with its own features disabled, rather than a stock build. Unlike stock it can log in, because the sideload keychain/container shims are kept at every level. Two levels, because one of them is not a control on its own:
 
@@ -540,7 +536,7 @@ Note when re-measuring: the numbers above came from an **unfiltered** capture. `
 
 ## Capturing device logs
 
-`./scripts/theta-log.sh` captures iPhone syslog to `logs/theta-<timestamp>.log` while a bug is reproduced. `--all` for freezes (unfiltered), `--list` to check what the Mac can see.
+`./scripts/theta-log.sh` captures iPhone syslog to `logs/theta-<timestamp>.log` while a bug is reproduced. Older captures are zstd-compressed (`.log.zst`): search them with `zstdgrep -a`, or pass one to `scripts/reel-stats.sh` as `<(zstdcat logs/theta-<stamp>.log.zst)`. `--all` for freezes (unfiltered), `--list` to check what the Mac can see.
 
 Requires `brew install libimobiledevice` (installed on this machine 2026-08-15) and the iPhone connected **over USB and unlocked**. Network pairing is not enough — `idevicesyslog -n` fails with `Could not connect to lockdownd: -8` even when `idevice_id -n` lists the device.
 
