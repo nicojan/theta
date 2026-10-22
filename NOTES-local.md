@@ -558,6 +558,14 @@ Two dead ends, so they are not retried: `log stream --device` was **removed in m
 
 `input/Payload` and `output/Payload` are ~566 MB each and both gitignored. Safe to delete once an IPA is confirmed installed; `build.sh` recreates `output/` and `input/` is re-staged from the source IPA.
 
+Pruned on 2026-10-21, taking the folder from 11 GB to 3.3 GB:
+
+- `logs/`: every capture is zstd-compressed (5.6 GB down to 288 MB, about 21×), and all 27 passed `zstd -t`. Nothing was deleted. Compress new captures once they are written up: `zstd -T0 -12 --rm logs/theta-<stamp>.log`. Search them with `zstdgrep -a`, and feed one to `reel-stats.sh` as `<(zstdcat …)`.
+- `artifacts/`: deleted `Instagram_stock442_control` (dead end), `Instagram_447_control2` (superseded by control2b), and `Instagram_447_theta` and `_447_theta_geo` (both superseded by `_447_theta_left`).
+- `output/`: emptied. `build.sh` recreates it.
+
+Still open: `input/Payload_442` plus `artifacts/Instagram_442_control2.ipa` (about 870 MB) only serve the 442 reel-baseline comparison. Delete them if the reel bug is not being chased further. Keep `input/Payload_447` for the next `compat.py` diff.
+
 ## Scope note
 
 Several Theta features act on other users' expectations rather than the local client: `StoryGhost` and `StorySeenLocalOnly` (view stories without appearing in the viewer list), `KeepDeletedMessages` (retain DMs the sender deleted), `HideTypingIndicator`, `ScreenshotSuppression` (defeats the screenshot notice on disappearing media), and `ProfileAnalyzer` (tracks follower/following changes on watched accounts). Recorded here so the contents of the build are not a surprise later — they are individually toggleable in Theta's settings.
