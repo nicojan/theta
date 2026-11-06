@@ -11,12 +11,9 @@ Fork: `nicojan/theta` (`origin`) ← `objcmsgSend/theta` (`upstream`). Clone at 
 | File | What it is |
 | --- | --- |
 | `Instagram_454_theta.ipa` | **current** 454.1 feature build, installed on nPhone 2026-11-05 |
-| `Instagram_448_theta.ipa` | last 448 feature build |
-| `Instagram_447_theta_left.ipa` | last 447 feature build (story row pinned left) |
-| `Instagram_447_control2b.ipa` | 447 level-2 control with the TestFlight-nag shim, the build that gave the reel verdict |
-| `Instagram_442_control2.ipa` | 442 control, for comparison against the 442 baseline capture |
+| `Instagram_448_theta.ipa` | last 448 feature build, the fallback if 454 misbehaves |
 
-Old payloads for `compat.py`: `input/Payload_448/` (previous), `input/Payload_447/` and `input/Payload_442/`. `input/Payload/` is 454.1.
+Old payload for `compat.py`: `input/Payload_448/`. `input/Payload/` is 454.1. The 442 and 447 payloads and builds were deleted on 2026-11-05 (see [Disk](#disk)).
 
 Installs go on **in place** again as of `0e22302` (the sinf-manifest fix, see [App extensions](#app-extensions-are-stripped-at-install)), so login and Theta settings survive a rebuild. Settings were reset twice on 2026-09-24 by the uninstalls needed before that fix; Nico re-enabled the story buttons, and other toggles may still be at their defaults (off: no defaults are registered).
 
@@ -183,7 +180,7 @@ iPhone Mirroring works for unattended tests, with the phone **locked** and still
 
 ## Instagram 448.0.0
 
-Moved to **448.0.0** on 2026-09-24 (`com.burbn.instagram_448.0.0_und3fined.ipa`, `cryptid 0`). The 447 payload is kept at `input/Payload_447/` for the next `compat.py` diff; the last 447 feature build is `artifacts/Instagram_447_theta_left.ipa`.
+Moved to **448.0.0** on 2026-09-24 (`com.burbn.instagram_448.0.0_und3fined.ipa`, `cryptid 0`). The 447 payload and the last 447 feature build (`Instagram_447_theta_left.ipa`) were kept until the 2026-11-05 prune.
 
 `./scripts/compat.py` 447 → 448 (50,014 → 50,443 classes; 397 identifiers OK on both) finds one break: `IGDirectMessageCell configureWithViewModel:ringViewSpecFactory:launcherSet:` became `…:mobileConfig:` (same class, same arity; the Keep Deleted Messages hook only passes the argument through). `KeepDeletedMessages.m` now hooks whichever the running version has, so `compat.py` keeps listing the old name as "broke" — that is the 447 fallback, not a regression.
 
@@ -191,7 +188,7 @@ First launch on device (`logs/theta-20260924-201735.log.zst`): logged in and the
 
 ## Instagram 447.0.0
 
-Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload is kept at `input/Payload_442/` and the 442 builds at `artifacts/Instagram_442_control2.ipa`, because the existing reel baseline (`logs/theta-20260914-155107.log.zst`) is a 442 capture and nothing from 447 is comparable to it.
+Moved to **447.0.0** on 2026-09-14 (`com.burbn.instagram_447.0.0_und3fined.ipa`, `cryptid 0`). The 442 payload and `artifacts/Instagram_442_control2.ipa` were kept (until the 2026-11-05 prune) because the existing reel baseline (`logs/theta-20260914-155107.log.zst`) is a 442 capture and nothing from 447 is comparable to it.
 
 `./scripts/compat.py` over 442 → 447 (45,428 → 50,014 classes; 384 of Theta's identifiers OK on both) finds exactly two that 442 had and 447 does not:
 
@@ -594,7 +591,7 @@ Pruned on 2026-10-21, taking the folder from 11 GB to 3.3 GB:
 - `artifacts/`: deleted `Instagram_stock442_control` (dead end), `Instagram_447_control2` (superseded by control2b), and `Instagram_447_theta` and `_447_theta_geo` (both superseded by `_447_theta_left`).
 - `output/`: emptied. `build.sh` recreates it.
 
-Still open: `input/Payload_442` plus `artifacts/Instagram_442_control2.ipa` (about 870 MB) only serve the 442 reel-baseline comparison. Delete them if the reel bug is not being chased further. As of 454.1 (2026-11-05) the `compat.py` baseline is `input/Payload_448`; `input/Payload_447` (~566 MB) and the 447 artifacts can go too. Directory deletes need Nico to run them with `!` (the guard hook blocks `rm -r`).
+Pruned again on 2026-11-05, about 2 GB: `input/Payload_442`, `input/Payload_447`, and `artifacts/Instagram_442_control2.ipa`, `_447_control2b.ipa`, `_447_theta_left.ipa`. The reel verdict and its captures stay in `logs/`; re-running the level-2 control means rebuilding it with `THETA_CONTROL=2`. Kept: `input/Payload_448` (the `compat.py` baseline) and `artifacts/Instagram_448_theta.ipa` (rollback). Directory deletes need Nico to run them with `!` (the guard hook blocks `rm -r`).
 
 ## Scope note
 
