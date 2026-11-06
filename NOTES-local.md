@@ -155,7 +155,7 @@ All passed. The `LC_LOAD_DYLIB` check is the one that matters — everything els
 
 Moved to **454.1.0** on 2026-11-05 (`com.burbn.instagram-454.1-Decrypted.ipa`, `cryptid 0`). 448 payload kept at `input/Payload_448/`.
 
-`./scripts/compat.py` 448 → 454.1 (50,443 → 55,445 classes; 393 OK on both) finds five breaks, and a per-class check of every resolvable `NullHookMessage*` call (130 pairs) finds the same five and no more. The per-class check matters: `compat.py` only asks whether a name exists *anywhere*, which is how `_didPressFollowButton` slipped through on 447.
+`./scripts/compat.py` 448 → 454.1 (50,443 → 55,445 classes; 393 OK on both) finds five breaks, and `scripts/hookcheck.py` — a per-class check of every resolvable `NullHookMessage*` call (130 pairs) — finds the same five and no more. Run both on every bump; `hookcheck.py` keeps listing fallbacks kept for older versions (the LS keychain hooks, the 447 DM-cell selector) as BROKE, which is expected. The per-class check matters: `compat.py` only asks whether a name exists *anywhere*, which is how `_didPressFollowButton` slipped through on 447.
 
 | Gone in 454.1 | Theta feature | Fix |
 | --- | --- | --- |
@@ -594,7 +594,7 @@ Pruned on 2026-10-21, taking the folder from 11 GB to 3.3 GB:
 - `artifacts/`: deleted `Instagram_stock442_control` (dead end), `Instagram_447_control2` (superseded by control2b), and `Instagram_447_theta` and `_447_theta_geo` (both superseded by `_447_theta_left`).
 - `output/`: emptied. `build.sh` recreates it.
 
-Still open: `input/Payload_442` plus `artifacts/Instagram_442_control2.ipa` (about 870 MB) only serve the 442 reel-baseline comparison. Delete them if the reel bug is not being chased further. Keep `input/Payload_447` for the next `compat.py` diff.
+Still open: `input/Payload_442` plus `artifacts/Instagram_442_control2.ipa` (about 870 MB) only serve the 442 reel-baseline comparison. Delete them if the reel bug is not being chased further. As of 454.1 (2026-11-05) the `compat.py` baseline is `input/Payload_448`; `input/Payload_447` (~566 MB) and the 447 artifacts can go too. Directory deletes need Nico to run them with `!` (the guard hook blocks `rm -r`).
 
 ## Scope note
 
