@@ -114,11 +114,15 @@ summarise() {
 	fi
 	rm -f "$PIDFILE"
 	[ -s "$OUT" ] || return 0
+	# The capture has already stopped here. On a multi-hundred-MB --all capture the counts below
+	# take several seconds, which earlier read as "the wrapper ignored TERM" (2026-09-24). It did
+	# not: a 2026-11-05 test stopped both processes within 1 s. Say so, and count bytewise.
 	echo
+	echo "==> Capture stopped. Summarising (a large --all log takes a few seconds)..."
 	echo "======================================================================"
 	echo "  Log saved: $OUT"
 	echo "  Size:      $(du -h "$OUT" | cut -f1), $(wc -l < "$OUT" | tr -d ' ') lines"
-	echo "  Notable:   $(grep -ciE 'theta|exception|crash|assert' "$OUT" 2>/dev/null || echo 0) lines mentioning Theta/exception/crash/assert"
+	echo "  Notable:   $(LC_ALL=C command grep -a -ciE 'theta|exception|crash|assert' "$OUT" 2>/dev/null || echo 0) lines mentioning Theta/exception/crash/assert"
 	echo
 	echo "  Send that file as-is."
 	echo "======================================================================"

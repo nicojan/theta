@@ -274,6 +274,23 @@ static id thetaStoryCurrentItemFromCell(IGStoryFullscreenCell *cell) {
     return item;
 }
 
+/// 454+: the section controller holds an injected `IGStoryViewerItemSeenReporter` (`_itemSeenReporter`
+/// on the ObjC controller, `itemSeenReporter` on the Swift one). Read straight off the ivar, since a
+/// Swift stored property is not KVC-visible.
+static id thetaStoryItemSeenReporterFromSection(id section) {
+    if (!section) return nil;
+    for (NSString *name in @[ @"_itemSeenReporter", @"itemSeenReporter" ]) {
+        Ivar iv = class_getInstanceVariable([section class], name.UTF8String);
+        if (!iv) continue;
+        const char *enc = ivar_getTypeEncoding(iv);
+        // Swift class-typed stored properties report an empty encoding; ObjC ones report '@'.
+        if (enc && enc[0] != '\0' && enc[0] != '@') continue;
+        id reporter = object_getIvar(section, iv);
+        if (reporter) return reporter;
+    }
+    return nil;
+}
+
 static BOOL thetaStoryMarkItemAsSeen(IGStoryFullscreenCell *cell, id item) {
     if (!cell || !item) return NO;
     id section = thetaStorySectionControllerFromCell(cell);
@@ -281,7 +298,25 @@ static BOOL thetaStoryMarkItemAsSeen(IGStoryFullscreenCell *cell, id item) {
     Class viewerCls = NSClassFromString(@"IGStoryViewerViewController");
     SEL sel = @selector(fullscreenSectionController:didMarkItemAsSeen:);
     if (!viewer || (viewerCls && ![viewer isKindOfClass:viewerCls]) || ![viewer respondsToSelector:sel]) {
-        NSLog(@"[Theta] StoryGhost: no viewer for didMarkItemAsSeen (viewer=%@)", NSStringFromClass([viewer class]));
+        // 454+: the viewer delegate method is gone; seen reporting goes through the reporter.
+        SEL reportSel = NSSelectorFromString(@"reportSeenItem:sectionController:");
+        id reporter = thetaStoryItemSeenReporterFromSection(section);
+        if (reporter && [reporter respondsToSelector:reportSel]) {
+            @try {
+                ((void (*)(id, SEL, id, id))objc_msgSend)(reporter, reportSel, item, section);
+                os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: marked via reporter section=%{public}s",
+                       NSStringFromClass([section class]).UTF8String ?: "?");
+                return YES;
+            } @catch (NSException *e) {
+                os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: reportSeenItem threw %{public}s",
+                       e.reason.UTF8String ?: "?");
+                return NO;
+            }
+        }
+        os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: no mark route (viewer=%{public}s section=%{public}s reporter=%{public}s)",
+               NSStringFromClass([viewer class]).UTF8String ?: "nil",
+               NSStringFromClass([section class]).UTF8String ?: "nil",
+               NSStringFromClass([reporter class]).UTF8String ?: "nil");
         return NO;
     }
     @try {
@@ -1355,7 +1390,8 @@ static void setupButtons(IGStoryFullscreenCell *self) {
     } @catch (__unused NSException *exception) {}
     [mentionsButton setImage:mentionsImage ?: [UIImage systemImageNamed:@"at"] forState:UIControlStateNormal];
     mentionsButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    mentionsButton.imageEdgeInsets = UIEdgeInsetsMake(2, 2, 2, 2);
+    // 9 = the old 2pt inset + 7pt per side for the 30→44 hit-area growth, so the icon box stays 26pt.
+    mentionsButton.imageEdgeInsets = UIEdgeInsetsMake(9, 9, 9, 9);
     mentionsButton.layer.shadowColor = [UIColor blackColor].CGColor;
     mentionsButton.layer.shadowOpacity = 0.4;
     mentionsButton.layer.shadowOffset = CGSizeMake(-2, 0);
@@ -1423,23 +1459,34 @@ static void setupButtons(IGStoryFullscreenCell *self) {
     // showed every frame resolved to x=8 in an LTR, untransformed, full-width cell with no
     // constraint conflict — something outside Auto Layout places it there, and the stack flipped
     // back right whenever the constraints won. Nico prefers the left, so both now agree.
+    // Hit area is 44x44 (HIG minimum) around the same ~30pt icon. The row sits in Instagram's
+    // tap-left-for-previous-story strip, so a 30pt target meant a near miss fell through to IG and
+    // went back a story. Icon centres are unchanged from the 30pt layout (x=23, 50pt pitch,
+    // first centre 165pt above the bottom); only the touchable frame grew.
+    static const CGFloat kThetaStoryButtonHit = 44.0;
+    static const CGFloat kThetaStoryButtonPitch = 50.0;
+    static const CGFloat kThetaStoryIconCenterX = 23.0;
+    static const CGFloat kThetaStoryFirstCenterFromBottom = 165.0;
     UIButton *previousButton = nil;
     for (UIButton *button in buttonStack) {
         ThetaSetCaptureHiding(button);
         [self addSubview:button];
         [NSLayoutConstraint activateConstraints:@[
-            [button.leftAnchor constraintEqualToAnchor:self.leftAnchor constant:8],
-            [button.widthAnchor constraintEqualToConstant:30],
-            [button.heightAnchor constraintEqualToConstant:30]
+            [button.leftAnchor constraintEqualToAnchor:self.leftAnchor
+                                              constant:kThetaStoryIconCenterX - kThetaStoryButtonHit / 2],
+            [button.widthAnchor constraintEqualToConstant:kThetaStoryButtonHit],
+            [button.heightAnchor constraintEqualToConstant:kThetaStoryButtonHit]
         ]];
 
         if (!previousButton) {
             [NSLayoutConstraint activateConstraints:@[
-                [button.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-150]
+                [button.bottomAnchor constraintEqualToAnchor:self.bottomAnchor
+                                                    constant:-(kThetaStoryFirstCenterFromBottom - kThetaStoryButtonHit / 2)]
             ]];
         } else {
             [NSLayoutConstraint activateConstraints:@[
-                [button.bottomAnchor constraintEqualToAnchor:previousButton.topAnchor constant:-20]
+                [button.bottomAnchor constraintEqualToAnchor:previousButton.topAnchor
+                                                    constant:-(kThetaStoryButtonPitch - kThetaStoryButtonHit)]
             ]];
         }
         previousButton = button;
@@ -1686,6 +1733,31 @@ static id hook_storyGhost(id self, SEL _cmd) {
     return media;
 }
 
+/// 454: IG no longer calls -[IGStoryFullscreenCell mediaView] (the method still exists, nothing
+/// sends it), so the overlay never built. layoutSubviews still runs per story. setupButtons adds
+/// subviews and constraints, so it runs on the next main-queue turn rather than inside the layout
+/// pass, coalesced per cell; its own owner memo makes repeat calls cheap no-ops.
+static char kThetaStoryOverlayPendingKey;
+static void (*orig_storyCellLayoutSubviews)(id self, SEL _cmd);
+static void hook_storyCellLayoutSubviews(id self, SEL _cmd) {
+    if (orig_storyCellLayoutSubviews) orig_storyCellLayoutSubviews(self, _cmd);
+    if (objc_getAssociatedObject(self, &kThetaStoryOverlayPendingKey)) return;
+    objc_setAssociatedObject(self, &kThetaStoryOverlayPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak id weakCell = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id cell = weakCell;
+        if (!cell) return;
+        objc_setAssociatedObject(cell, &kThetaStoryOverlayPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        theta_storyOverlayDiag(@"layoutSubviews hook fired", nil);
+        @try {
+            setupButtons(cell);
+        } @catch (NSException *exception) {
+            os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost setupButtons (layout): %{public}s",
+                   exception.reason.UTF8String ?: "?");
+        }
+    });
+}
+
 static void (*orig_storyGhost2)(id self, SEL _cmd, id fullscreenSectionController, id didMarkItemAsSeen);
 static void hook_storyGhost2(id self, SEL _cmd, id fullscreenSectionController, id didMarkItemAsSeen) {
     if (!orig_storyGhost2) return;
@@ -1714,6 +1786,34 @@ static void hook_storyGhost2(id self, SEL _cmd, id fullscreenSectionController, 
             orig_storyGhost2(self, _cmd, fullscreenSectionController, didMarkItemAsSeen);
         } @catch (__unused NSException *e) {
         }
+    }
+}
+
+/// 454+ counterpart of hook_storyGhost2: `-[IGStoryViewerItemSeenReporter reportSeenItem:sectionController:]`
+/// replaced the viewer's `fullscreenSectionController:didMarkItemAsSeen:` as the point where a viewed
+/// item is reported seen. Same gate, argument order swapped (item first).
+static void (*orig_storyGhost3)(id self, SEL _cmd, id item, id sectionController);
+static void hook_storyGhost3(id self, SEL _cmd, id item, id sectionController) {
+    if (!orig_storyGhost3) return;
+
+    if (!ENABLED(@"Story Ghost")) {
+        if (ENABLED(@"Seen Receipts Stay Local")) {
+            THStorySeenReceiptNetworkGuardEnterWithContext(sectionController, nil);
+            @try { orig_storyGhost3(self, _cmd, item, sectionController); } @catch (__unused NSException *e) {}
+            THStorySeenReceiptNetworkGuardLeave();
+            return;
+        }
+        @try { orig_storyGhost3(self, _cmd, item, sectionController); } @catch (__unused NSException *e) {}
+        return;
+    }
+
+    if (shouldBeSeen) {
+        shouldBeSeen = false;
+        os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: reportSeenItem passed (manual mark)");
+        @try { orig_storyGhost3(self, _cmd, item, sectionController); } @catch (__unused NSException *e) {}
+    } else {
+        os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: reportSeenItem blocked item=%{public}s",
+               NSStringFromClass([item class]).UTF8String ?: "?");
     }
 }
 
@@ -1872,11 +1972,18 @@ void THRegisterStoryGhostHooks(void) {
     Class viewerCls = ThetaFirstClass(@[ @"IGStoryViewerViewController" ]);
     NullHookMessageIfPresent(cellCls, @selector(mediaView), (void *)hook_storyGhost, &orig_storyGhost);
     NullHookMessageIfPresent(cellCls, @selector(prepareForReuse), (void *)hook_storyCellPrepareForReuse, &orig_storyCellPrepareForReuse);
+    NullHookMessageIfPresent(cellCls, @selector(layoutSubviews), (void *)hook_storyCellLayoutSubviews, &orig_storyCellLayoutSubviews);
     NullHookMessageIfPresent(viewerCls, @selector(fullscreenSectionController:didMarkItemAsSeen:), (void *)hook_storyGhost2, &orig_storyGhost2);
     if (!orig_storyGhost) {
         NSLog(@"[Theta] StoryGhost: mediaView hook missing orig — overlay may be unavailable");
     }
-    if (!orig_storyGhost2) {
-        NSLog(@"[Theta] StoryGhost: didMarkItemAsSeen hook missing orig — mark-seen actions are no-ops");
+    // 454+: viewer delegate method removed; gate the injected reporter instead.
+    NullHookMessageIfPresent(objc_getClass("IGStoryViewerItemSeenReporter"),
+                             NSSelectorFromString(@"reportSeenItem:sectionController:"),
+                             (void *)hook_storyGhost3, &orig_storyGhost3);
+    os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: seen gate didMark=%d reporter=%d",
+           orig_storyGhost2 != NULL, orig_storyGhost3 != NULL);
+    if (!orig_storyGhost2 && !orig_storyGhost3) {
+        os_log(OS_LOG_DEFAULT, "[Theta] StoryGhost: NO seen gate installed — Story Ghost cannot block receipts");
     }
 }

@@ -1,3 +1,4 @@
+#import <os/log.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -218,8 +219,20 @@ static BOOL theta_autoMarkListIsEmpty(void) {
 	return ![list isKindOfClass:[NSArray class]] || list.count == 0;
 }
 
+/// A manual mark (the DM eye, Seen On Typing/React/Send) calls markLastMessageAsSeen, and IG then
+/// asks this data source's shouldUpdateLastSeenMessage — which the block below answers NO. Without a
+/// bypass the manual mark was vetoed by Theta's own hook while the toast still said "Marked as seen!".
+/// The window is time-based because IG may consult the gate on a later runloop turn.
+static CFAbsoluteTime s_thetaDMManualMarkUntil = 0;
+static void theta_dmBeginManualMark(void) { s_thetaDMManualMarkUntil = CFAbsoluteTimeGetCurrent() + 1.5; }
+
 static BOOL (*orig_markMessagesAsSeen)(id self, SEL _cmd);
 static BOOL hook_markMessagesAsSeen(id self, SEL _cmd) {
+	if (CFAbsoluteTimeGetCurrent() < s_thetaDMManualMarkUntil) {
+		BOOL r = orig_markMessagesAsSeen ? orig_markMessagesAsSeen(self, _cmd) : YES;
+		os_log(OS_LOG_DEFAULT, "[Theta] DMSeen: gate passed (manual mark) orig=%d", r);
+		return r;
+	}
 	BOOL markAsSeen = ENABLED(@"Mark As Seen");
 	BOOL seenOnTyping = ENABLED(@"Seen On Typing");
 	BOOL seenOnReact = ENABLED(@"Seen On React");
@@ -841,6 +854,7 @@ void theta_showMarkedAsSeenToastDeferred(void) {
 /// Never call markLastMessageAsSeen on an arbitrary delegate — some composer wrappers
 /// respond to the selector as a no-op, which is what broke Seen On Typing.
 void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewController) {
+	theta_dmBeginManualMark();
 	Class listCls = s_messageListVCClass();
 	Class threadCls = s_threadVCClass();
 
@@ -860,6 +874,7 @@ void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewCont
 	if (listVC && [listVC respondsToSelector:@selector(markLastMessageAsSeen)]) {
 		BOOL isRealList = listCls && [listVC isKindOfClass:listCls];
 		if (isRealList || theta_lastSeenTrackerFromObject(listVC)) {
+			os_log(OS_LOG_DEFAULT, "[Theta] DMSeen: manual mark via listVC");
 			[listVC performSelector:@selector(markLastMessageAsSeen)];
 			return;
 		}
@@ -869,7 +884,10 @@ void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewCont
 	if (!tracker) tracker = theta_lastSeenTrackerFromObject(threadVC);
 	if (!tracker) tracker = theta_lastSeenTrackerFromObject(theta_threadVCFromWindow());
 	if (tracker && [tracker respondsToSelector:@selector(markLastMessageAsSeen)]) {
+		os_log(OS_LOG_DEFAULT, "[Theta] DMSeen: manual mark via tracker %{public}s", class_getName([tracker class]));
 		[tracker performSelector:@selector(markLastMessageAsSeen)];
+	} else {
+		os_log(OS_LOG_DEFAULT, "[Theta] DMSeen: manual mark found no route");
 	}
 }
 
@@ -1149,6 +1167,7 @@ static void hook_seenOnSend(id self, SEL _cmd, id arg1) {
 				id delegate = [msgListDataSource valueForKey:@"delegate"];
 				id tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
 
+				theta_dmBeginManualMark();
 				if ([threadViewController respondsToSelector:@selector(markLastMessageAsSeen)]) {
 					[threadViewController performSelector:@selector(markLastMessageAsSeen)];
 				} else {
@@ -1164,6 +1183,7 @@ static void hook_seenOnSend(id self, SEL _cmd, id arg1) {
 					id delegate = [msgListDataSource valueForKey:@"delegate"];
 					id tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
 
+					theta_dmBeginManualMark();
 					if ([delegate respondsToSelector:@selector(markLastMessageAsSeen)]) {
 						[delegate performSelector:@selector(markLastMessageAsSeen)];
 					} else {

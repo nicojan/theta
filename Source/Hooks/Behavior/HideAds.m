@@ -223,12 +223,24 @@ static void hook_hideAds5(id self, SEL _cmd, id adItem, NSInteger overlayStyle, 
     [self removeFromSuperview];
 }
 
+// 447+: three BOOLs appended (useBrandNameLabel:shouldShowAdvertiserFullName:showAdControlsButton:).
+static void (*orig_hideAds5b)(id self, SEL _cmd, id adItem, NSInteger overlayStyle, BOOL ctaEnabled, id delegate, NSUInteger surfaceType, id analyticsModule, NSUInteger labelAlignment, BOOL useBrandNameLabel, BOOL showFullName, BOOL showAdControls);
+static void hook_hideAds5b(id self, SEL _cmd, id adItem, NSInteger overlayStyle, BOOL ctaEnabled, id delegate, NSUInteger surfaceType, id analyticsModule, NSUInteger labelAlignment, BOOL useBrandNameLabel, BOOL showFullName, BOOL showAdControls) {
+    if (!ENABLED(@"Disable Ads")) {
+        if (orig_hideAds5b) orig_hideAds5b(self, _cmd, adItem, overlayStyle, ctaEnabled, delegate, surfaceType, analyticsModule, labelAlignment, useBrandNameLabel, showFullName, showAdControls);
+        return;
+    }
+
+    [self removeFromSuperview];
+}
+
 void THRegisterHideAdsCoreHooks(void) {
     NullHookMessageIfPresent(objc_getClass("IGMainFeedListAdapterDataSource"), @selector(objectsForListAdapter:), (void *)hook_hideAds, &orig_hideAds);
     NullHookMessageIfPresent(objc_getClass("IGStoryAdsResponseParser"), @selector(parsedObjectFromResponse:), (void *)hook_hideAds2, &orig_hideAds2);
     NullHookMessageIfPresent(objc_getClass("IGSundialAdsResponseParser"), @selector(parsedObjectFromResponse:), (void *)hook_hideAds4, &orig_hideAds4);
     NullHookMessageIfPresent(objc_getClass("IGFeedItemChain"), @selector(allChainItems), (void *)hook_hideAds3, &orig_hideAds3);
     NullHookMessageIfPresent(objc_getClass("IGDiscoveryGridAdNoCTAOverlayView"), @selector(configureWithAdItem:overlayViewStyle:ctaEnabled:delegate:surfaceType:analyticsModule:labelAlignment:), (void *)hook_hideAds5, &orig_hideAds5);
+    NullHookMessageIfPresent(objc_getClass("IGDiscoveryGridAdNoCTAOverlayView"), NSSelectorFromString(@"configureWithAdItem:overlayViewStyle:ctaEnabled:delegate:surfaceType:analyticsModule:labelAlignment:useBrandNameLabel:shouldShowAdvertiserFullName:showAdControlsButton:"), (void *)hook_hideAds5b, &orig_hideAds5b);
 }
 
 void THRegisterHideSuggestedReelsHooks(void) {

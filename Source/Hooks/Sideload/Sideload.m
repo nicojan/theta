@@ -144,6 +144,20 @@ id hook_LS_initSynchronizableItem(id self, SEL _cmd, id serviceID, id accessGrou
 	return orig_LS_initSynchronizableItem(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup), userID);
 }
 
+// 454+: LSKeychainItemController is gone; its init shape now lives on FBAppAttestationPendingKeychainController.
+// SecItem* is also rewritten at the C level (THSideloadFishhook.m), so this is the second layer, as LS was.
+id (*orig_FBAAPending_initWithServiceIDAccessGroupUserID)(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+id hook_FBAAPending_initWithServiceIDAccessGroupUserID(id self, SEL _cmd, id serviceID, id accessGroup, id userID) {
+	if (!orig_FBAAPending_initWithServiceIDAccessGroupUserID) return nil;
+	return orig_FBAAPending_initWithServiceIDAccessGroupUserID(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup), userID);
+}
+
+id (*orig_FBAAPending_initWithServiceIDAccessGroup)(id self, SEL _cmd, id serviceID, id accessGroup);
+id hook_FBAAPending_initWithServiceIDAccessGroup(id self, SEL _cmd, id serviceID, id accessGroup) {
+	if (!orig_FBAAPending_initWithServiceIDAccessGroup) return nil;
+	return orig_FBAAPending_initWithServiceIDAccessGroup(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup));
+}
+
 id (*orig_UIC_keyChainStoreWithServiceAccessGroup)(id self, SEL _cmd, id service, id accessGroup);
 id hook_UIC_keyChainStoreWithServiceAccessGroup(id self, SEL _cmd, id service, id accessGroup) {
 	if (!orig_UIC_keyChainStoreWithServiceAccessGroup) return nil;
