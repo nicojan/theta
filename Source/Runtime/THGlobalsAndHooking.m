@@ -194,6 +194,127 @@ static void ThetaSetCaptureHiding(UIView *view) {
     }
 }
 
+#pragma mark - Hook fire counters
+
+/*
+ * Every hook installed through ThetaInstallMessageHook gets a trampoline from
+ * THHookCounterTramp.S that counts calls, then branches to the real hook. Counts accumulate
+ * across launches in NSUserDefaults (flushed on background/terminate), so a hook still at zero
+ * after normal use is one that installed but never fired — the 454 `-mediaView` failure mode,
+ * which no static check can see. Shown under Theta settings → gear → Hook Activity.
+ */
+#define TH_HOOK_SLOT_COUNT 1024
+typedef struct { void *target; volatile uint64_t count; } THHookSlot;
+extern THHookSlot th_hook_slots[TH_HOOK_SLOT_COUNT];
+extern char th_hook_tramps[];
+static char *th_hook_names[TH_HOOK_SLOT_COUNT];
+static uint32_t th_hook_used = 0;
+static uint32_t th_hook_overflow = 0;
+static NSString *const kTHHookTotalsKey = @"Theta_HookActivity_Totals";
+static NSString *const kTHHookSinceKey = @"Theta_HookActivity_Since";
+static NSDictionary<NSString *, NSNumber *> *th_hook_baseTotals;
+
+/// Returns the IMP to install: a counting trampoline, or `replacement` itself if the pool is spent.
+static void *THHookCounterWrap(void *replacement, Class cls, SEL sel, BOOL isClassMethod) {
+#if defined(__arm64__) || defined(__aarch64__)
+    if (!replacement) return replacement;
+    if (th_hook_used >= TH_HOOK_SLOT_COUNT) { th_hook_overflow++; return replacement; }
+    uint32_t i = th_hook_used++;
+    th_hook_slots[i].target = replacement;
+    th_hook_slots[i].count = 0;
+    NSString *name = [NSString stringWithFormat:@"%c[%@ %@]", isClassMethod ? '+' : '-',
+                      NSStringFromClass(cls) ?: @"?", NSStringFromSelector(sel) ?: @"?"];
+    th_hook_names[i] = strdup(name.UTF8String ?: "?");
+    __atomic_thread_fence(__ATOMIC_SEQ_CST); // slot visible before the trampoline is installed
+    return (void *)(th_hook_tramps + 8 * i);
+#else
+    return replacement;
+#endif
+}
+
+/// Name → total fires: persisted totals from earlier launches plus this launch's live counts.
+static NSDictionary<NSString *, NSNumber *> *THHookActivityTotals(void) {
+    if (!th_hook_baseTotals) {
+        NSDictionary *stored = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kTHHookTotalsKey];
+        th_hook_baseTotals = [stored isKindOfClass:[NSDictionary class]] ? [stored copy] : @{};
+    }
+    NSMutableDictionary<NSString *, NSNumber *> *out = [th_hook_baseTotals mutableCopy];
+    for (uint32_t i = 0; i < th_hook_used; i++) {
+        NSString *name = th_hook_names[i] ? @(th_hook_names[i]) : nil;
+        if (!name) continue;
+        uint64_t prior = [out[name] unsignedLongLongValue];
+        out[name] = @(prior + th_hook_slots[i].count);
+    }
+    return [out copy];
+}
+
+static void THHookActivityFlush(void) {
+    NSDictionary *totals = THHookActivityTotals();
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setObject:totals forKey:kTHHookTotalsKey];
+    if (![d objectForKey:kTHHookSinceKey]) [d setObject:[NSDate date] forKey:kTHHookSinceKey];
+    // Live counts are now inside the persisted totals; rebase so the next flush does not double-count.
+    th_hook_baseTotals = totals;
+    for (uint32_t i = 0; i < th_hook_used; i++) th_hook_slots[i].count = 0;
+
+    NSUInteger never = 0;
+    for (uint32_t i = 0; i < th_hook_used; i++) {
+        if (th_hook_names[i] && [totals[@(th_hook_names[i])] unsignedLongLongValue] == 0) never++;
+    }
+    os_log(OS_LOG_DEFAULT, "[Theta] HookActivity: %u hooks installed this launch, %lu never fired yet, %u not counted (pool full)",
+           th_hook_used, (unsigned long)never, th_hook_overflow);
+}
+
+// C linkage: this file is compiled inside TweakCOMPILE.xm (Objective-C++), the settings page is plain ObjC.
+FOUNDATION_EXTERN NSString *THHookActivityReport(void);
+FOUNDATION_EXTERN void THHookActivityReset(void);
+
+/// Report for the settings page: hooks installed this launch, never-fired first.
+NSString *THHookActivityReport(void) {
+    NSDictionary<NSString *, NSNumber *> *totals = THHookActivityTotals();
+    NSMutableOrderedSet<NSString *> *installed = [NSMutableOrderedSet orderedSet];
+    for (uint32_t i = 0; i < th_hook_used; i++) if (th_hook_names[i]) [installed addObject:@(th_hook_names[i])];
+
+    NSArray<NSString *> *sorted = [installed.array sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray<NSString *> *never = [NSMutableArray array];
+    NSMutableArray<NSString *> *fired = [NSMutableArray array];
+    for (NSString *n in sorted) {
+        uint64_t c = [totals[n] unsignedLongLongValue];
+        if (c == 0) [never addObject:[NSString stringWithFormat:@"  %@", n]];
+        else [fired addObject:[NSString stringWithFormat:@"%10llu  %@", c, n]];
+    }
+    NSDate *since = [[NSUserDefaults standardUserDefaults] objectForKey:kTHHookSinceKey];
+    NSString *sinceText = [since isKindOfClass:[NSDate class]]
+        ? [NSDateFormatter localizedStringFromDate:since dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle]
+        : @"this launch";
+    NSMutableString *s = [NSMutableString string];
+    [s appendFormat:@"Counting since %@\n%lu hooks installed, %lu never fired",
+     sinceText, (unsigned long)sorted.count, (unsigned long)never.count];
+    if (th_hook_overflow) [s appendFormat:@", %u not counted (pool full)", th_hook_overflow];
+    [s appendString:@"\n\nA hook at zero after you have used its feature installed but never runs.\n"];
+    [s appendFormat:@"\n— NEVER FIRED (%lu) —\n%@\n", (unsigned long)never.count, [never componentsJoinedByString:@"\n"]];
+    [s appendFormat:@"\n— FIRED (%lu) —\n%@\n", (unsigned long)fired.count, [fired componentsJoinedByString:@"\n"]];
+    return s;
+}
+
+void THHookActivityReset(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d removeObjectForKey:kTHHookTotalsKey];
+    [d setObject:[NSDate date] forKey:kTHHookSinceKey];
+    th_hook_baseTotals = @{};
+    for (uint32_t i = 0; i < th_hook_used; i++) th_hook_slots[i].count = 0;
+}
+
+static void THHookActivityStartFlushing(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSNotificationName n in @[ UIApplicationDidEnterBackgroundNotification, UIApplicationWillTerminateNotification ]) {
+            [[NSNotificationCenter defaultCenter] addObserverForName:n object:nil queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:^(__unused NSNotification *note) { THHookActivityFlush(); }];
+        }
+    });
+}
+
 /**
  * Safe ObjC swizzle.
  *
@@ -232,8 +353,10 @@ static BOOL ThetaInstallMessageHook(Class cls, SEL sel, void *replacement, void 
 
     Class targetClass = instanceMethod ? cls : object_getClass((id)cls);
     IMP previous = NULL;
+    THHookActivityStartFlushing();
+    void *installed = THHookCounterWrap(replacement, cls, sel, instanceMethod == NULL);
 
-    if (class_addMethod(targetClass, sel, (IMP)replacement, types)) {
+    if (class_addMethod(targetClass, sel, (IMP)installed, types)) {
         // Method was inherited; we added an override. `real` is the super IMP.
         previous = real;
     } else {
@@ -241,7 +364,7 @@ static BOOL ThetaInstallMessageHook(Class cls, SEL sel, void *replacement, void 
         Method local = instanceMethod ? class_getInstanceMethod(targetClass, sel)
                                       : class_getClassMethod(cls, sel);
         if (!local) local = method;
-        previous = method_setImplementation(local, (IMP)replacement);
+        previous = method_setImplementation(local, (IMP)installed);
         if (!previous) previous = real;
     }
 

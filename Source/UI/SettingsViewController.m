@@ -382,7 +382,16 @@ static UIColor *THColorFromHexString(NSString *hexString) {
 
     UIMenu *importExportMenu = [UIMenu menuWithTitle:@"Import/Export Settings" children:@[importMenu, exportMenu]];
 
-    UIMenu *mainMenu = [UIMenu menuWithTitle:@"" children:@[applyMenu, importExportMenu, resetMenu]];
+    UIAction *hookActivityAction = [UIAction actionWithTitle:@"Hook Activity"
+                                                       image:[UIImage systemImageNamed:@"waveform.path.ecg"]
+                                                  identifier:nil
+                                                     handler:^(__unused UIAction *action) {
+        UIViewController *vc = [[NSClassFromString(@"ThetaHookActivityViewController") alloc] init];
+        if (!vc) return;
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:nav animated:YES completion:nil];
+    }];
+    UIMenu *mainMenu = [UIMenu menuWithTitle:@"" children:@[applyMenu, importExportMenu, resetMenu, hookActivityAction]];
     [applyButton setMenu:mainMenu];
     if (@available(iOS 14.0, *)) {
         SEL sel = NSSelectorFromString(@"setShowsMenuAsPrimaryAction:");
@@ -2005,7 +2014,16 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
     
     UIMenu *importExportMenu = [UIMenu menuWithTitle:@"Import/Export Settings" children:@[importMenu, exportMenu]];
     
-    UIMenu *mainMenu = [UIMenu menuWithTitle:@"" children:@[applyMenu, importExportMenu, resetMenu]];
+    UIAction *hookActivityAction = [UIAction actionWithTitle:@"Hook Activity"
+                                                       image:[UIImage systemImageNamed:@"waveform.path.ecg"]
+                                                  identifier:nil
+                                                     handler:^(__unused UIAction *action) {
+        UIViewController *vc = [[NSClassFromString(@"ThetaHookActivityViewController") alloc] init];
+        if (!vc) return;
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:nav animated:YES completion:nil];
+    }];
+    UIMenu *mainMenu = [UIMenu menuWithTitle:@"" children:@[applyMenu, importExportMenu, resetMenu, hookActivityAction]];
     [applyButton setMenu:mainMenu];
     if (@available(iOS 14.0, *)) {
         SEL sel = NSSelectorFromString(@"setShowsMenuAsPrimaryAction:");

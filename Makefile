@@ -22,7 +22,7 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 
 TWEAK_NAME = Theta
 
-Theta_FILES = TweakCOMPILE.xm fishhook.c \
+Theta_FILES = TweakCOMPILE.xm fishhook.c Source/Runtime/THHookCounterTramp.S \
 	$(wildcard Source/UI/*.m) \
 	$(wildcard Source/Media/*.m) \
 	$(wildcard Source/ProfileAnalyzer/*.m)
